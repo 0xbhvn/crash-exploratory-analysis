@@ -30,10 +30,11 @@ logger = logging.getLogger(__name__)
 
 class CrashStreakAnalyzer:
     """
-    Analyzes crash game data to predict streak lengths before 10× multipliers.
+    Analyzes crash game data to predict streak lengths including 10× multipliers.
 
     This class handles data loading, cleaning, feature engineering, model training,
-    and prediction of streak length categories.
+    and prediction of streak length categories. Streak lengths include all games
+    up to and including the 10× multiplier.
     """
 
     def __init__(self,
@@ -118,15 +119,15 @@ class CrashStreakAnalyzer:
 
     def analyze_streaks(self, save_streak_lengths: bool = True) -> List[int]:
         """
-        Analyze streak lengths before 10× multipliers.
+        Analyze streak lengths including 10× multipliers.
 
         Args:
             save_streak_lengths: Whether to save streak lengths to CSV
 
         Returns:
-            List of streak lengths
+            List of streak lengths (including the game with ≥10× multiplier)
         """
-        print_info("Analyzing streak lengths before 10× multipliers")
+        print_info("Analyzing streak lengths including 10× multipliers")
         streak_lengths = data_processing.analyze_streaks(self.df)
 
         # Calculate percentiles
@@ -274,7 +275,7 @@ class CrashStreakAnalyzer:
             last_window_multipliers: List of last WINDOW multipliers
 
         Returns:
-            Dictionary of cluster probabilities
+            Dictionary of cluster probabilities for streak lengths (including the 10× game itself)
         """
         if self.bst_final is None:
             raise ValueError("Model not trained. Call train_model() first.")
@@ -288,11 +289,11 @@ class CrashStreakAnalyzer:
         prediction_table = create_table(
             "Prediction Results", ["Cluster", "Description", "Probability"])
 
-        # Map cluster IDs to descriptions
+        # Map cluster IDs to descriptions (updated to include the 10× game in the streak)
         cluster_descriptions = {
-            "0": f"Short Streak (1-5 games)",
-            "1": f"Medium Streak (6-12 games)",
-            "2": f"Long Streak (13+ games)"
+            "0": f"Short Streak (1-5 games, including the 10× hit)",
+            "1": f"Medium Streak (6-12 games, including the 10× hit)",
+            "2": f"Long Streak (13+ games, including the 10× hit)"
         }
 
         # Sort by probability (descending)

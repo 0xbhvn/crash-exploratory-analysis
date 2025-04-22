@@ -21,23 +21,25 @@ from logger_config import (
 logger = logging.getLogger(__name__)
 
 
-def plot_streaks(streak_lengths: List[int], percentiles: Dict[str, float], output_dir: str) -> None:
+def plot_streaks(df, output_dir: str) -> None:
     """
-    Generate and save plots of streak length distributions.
+    Plot the distribution of streak lengths.
+
+    A streak is defined as a sequence of consecutive games that includes a game with a 
+    multiplier of 10x or greater. The streak length includes the high multiplier game itself.
 
     Args:
-        streak_lengths: List of streak lengths
-        percentiles: Dictionary of percentiles
+        df: Dataframe containing streak data
         output_dir: Directory to save plots
     """
     print_info("Generating streak length distribution plots")
 
     # Basic histogram
     plt.figure(figsize=(10, 6))
-    bins = range(1, max(streak_lengths) + 2)
-    plt.hist(streak_lengths, bins=bins, edgecolor="black", alpha=0.8)
-    plt.title("Distribution of streak lengths BEFORE a ≥10× bust")
-    plt.xlabel("Streak length (# consecutive <10× busts)")
+    bins = range(1, max(df['streak_length']) + 2)
+    plt.hist(df['streak_length'], bins=bins, edgecolor="black", alpha=0.8)
+    plt.title("Distribution of streak lengths INCLUDING a ≥10× multiplier")
+    plt.xlabel("Streak length (# consecutive games including the ≥10× game)")
     plt.ylabel("Frequency")
     plt_file = os.path.join(output_dir, "streak_histogram.png")
     plt.savefig(plt_file)
@@ -46,7 +48,7 @@ def plot_streaks(streak_lengths: List[int], percentiles: Dict[str, float], outpu
 
     # Histogram with percentiles
     plt.figure(figsize=(12, 6))
-    plt.hist(streak_lengths, bins=bins, edgecolor='black', alpha=0.7)
+    plt.hist(df['streak_length'], bins=bins, edgecolor='black', alpha=0.7)
     for label, value in percentiles.items():
         plt.axvline(value, color='red', linestyle='--')
         plt.text(value + 0.3, plt.ylim()[1] * 0.9, f"{label}: {value:.1f}",
@@ -62,7 +64,7 @@ def plot_streaks(streak_lengths: List[int], percentiles: Dict[str, float], outpu
 
     # Create stats for the plots
     plot_stats = {
-        "Total Streaks": len(streak_lengths),
+        "Total Streaks": len(df['streak_length']),
         "Median (P50)": f"{percentiles['P50']:.1f}",
         "75th Percentile": f"{percentiles['P75']:.1f}",
         "90th Percentile": f"{percentiles['P90']:.1f}",
@@ -163,7 +165,8 @@ def plot_calibration_curve(y_test, probs_test, output_dir: str) -> None:
 
     plt.xlabel('Mean predicted probability')
     plt.ylabel('Fraction of positives')
-    plt.title('Calibration Curve (Short streak class)')
+    plt.title(
+        'Calibration Curve (Short streak class - game count including ≥10× multiplier)')
     plt.legend(loc='lower right')
     plt.tight_layout()
     plt_file = os.path.join(output_dir, "calibration_curve.png")

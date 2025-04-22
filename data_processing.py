@@ -58,29 +58,29 @@ def load_data(csv_path: str) -> pd.DataFrame:
 
 def analyze_streaks(df: pd.DataFrame) -> List[int]:
     """
-    Analyze streak lengths before 10× multipliers.
+    Analyze streak lengths including 10× multipliers.
 
     Args:
         df: DataFrame with game data
 
     Returns:
-        List of streak lengths
+        List of streak lengths (including the game with ≥10× multiplier)
     """
-    logger.info("Analyzing streak lengths before 10× multipliers")
+    logger.info("Analyzing streak lengths including 10× multipliers")
 
     streak_lengths = []
     current_streak_length = 0
 
     for bust in df["Bust"]:
-        if bust < 10:
-            current_streak_length += 1
-        else:
-            # We hit ≥10×  ⇒ record the *preceding* streak length
+        # Increment streak for all games (including ≥10×)
+        current_streak_length += 1
+
+        if bust >= 10:
+            # We hit ≥10× ⇒ record the streak length (including this game)
             streak_lengths.append(current_streak_length)
             current_streak_length = 0  # reset
 
     # If the dataset ends without a 10×, we drop the trailing incomplete streak
-    streak_lengths = [s for s in streak_lengths if s > 0]
 
     # Display streak statistics
     streaks_stats = {
@@ -145,7 +145,7 @@ def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[in
     """
     Prepare features for machine learning, including:
     - Mark 10× hits
-    - Calculate distance to next 10× hit
+    - Calculate distance to next 10× hit (including the 10× hit)
     - Create cluster labels
     - Generate rolling window features
 
@@ -167,25 +167,33 @@ def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[in
     print_info(
         f"Marked {df['is_hit10'].sum()} 10× hits out of {len(df)} games")
 
-    # Distance to next 10×
+    # Distance to next 10× (including the 10× game itself)
     n = len(df)
     gap = np.empty(n, dtype=int)
     dist = n  # start with a large but finite number
 
     for i in range(n - 1, -1, -1):
+        dist += 1  # increment distance for all games
         if df.at[i, "is_hit10"]:
-            dist = 0  # reset on every hit
+            gap[i] = 0  # this game is a 10× hit
+            dist = 0  # reset counter from this game
         else:
-            dist += 1  # count how far we are
-        gap[i] = dist
+            gap[i] = dist  # distance to next 10×
 
     df["gap_next_10x"] = gap
     print_info("Calculated distance to next 10× for each game")
 
     # Map gap to cluster
     def gap_to_cluster(g):
+        # Include the game with the 10× in the streak length
+        streak_length = g + 1  # +1 to include the 10× game
+
+        # If this is a 10× game itself, set streak_length to 1
+        if g == 0:
+            streak_length = 1
+
         for c, (lo, hi) in clusters.items():
-            if lo <= g <= hi:
+            if lo <= streak_length <= hi:
                 return c
         return np.nan  # anything >9999 → NaN
 
