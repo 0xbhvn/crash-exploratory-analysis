@@ -57,12 +57,12 @@ class RichProgressHandler(logging.Handler):
                     self.task_id, completed=int(record.progress * 100))
 
 
-def setup_logging(log_file: Optional[str] = None, level=logging.INFO):
+def setup_logging(log_file: Optional[str] = 'logs/crash_analysis.log', level=logging.INFO):
     """
     Set up rich logging for the application.
 
     Args:
-        log_file: Optional path to a log file
+        log_file: Optional path to a log file (default: logs/crash_analysis.log)
         level: Logging level
 
     Returns:
