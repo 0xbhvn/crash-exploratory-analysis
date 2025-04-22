@@ -234,13 +234,15 @@ class CrashStreakAnalyzer:
         # Add class counts to feature_info
         for i in range(self.NUM_CLUSTERS):
             if i == 0:
-                description = f"Class {i} (Bottom {int(self.PERCENTILES[0]*100)}%)"
+                description = f"Class {i} (Bottom {int(self.PERCENTILES[0]*100)}%, 1-{int(self.percentile_values[0])} streak length)"
             elif i == self.NUM_CLUSTERS - 1:
-                description = f"Class {i} (Top {int((1-self.PERCENTILES[-1])*100)}%)"
+                description = f"Class {i} (Top {int((1-self.PERCENTILES[-1])*100)}%, >{int(self.percentile_values[-1])} streak length)"
             else:
                 lower = int(self.PERCENTILES[i-1]*100)
                 upper = int(self.PERCENTILES[i]*100)
-                description = f"Class {i} ({lower}-{upper}%)"
+                lower_streak = int(self.percentile_values[i-1]) + 1
+                upper_streak = int(self.percentile_values[i])
+                description = f"Class {i} ({lower}-{upper}%, {lower_streak}-{upper_streak} streak length)"
 
             feature_info[description] = (self.df["target_cluster"] == i).sum()
 
@@ -329,7 +331,7 @@ class CrashStreakAnalyzer:
             last_window_multipliers: List of last WINDOW multipliers
 
         Returns:
-            Dictionary of cluster probabilities for streak lengths (including the hit game itself)
+            Dictionary of cluster probabilities for streak lengths
         """
         if self.bst_final is None:
             raise ValueError("Model not trained. Call train_model() first.")
@@ -349,15 +351,17 @@ class CrashStreakAnalyzer:
         for i in range(self.NUM_CLUSTERS):
             if i == 0:
                 cluster_descriptions[str(
-                    i)] = f"Cluster {i}: Bottom {int(self.PERCENTILES[0]*100)}% (shortest streaks, including the {self.MULTIPLIER_THRESHOLD}× hit)"
+                    i)] = f"Cluster {i}: Bottom {int(self.PERCENTILES[0]*100)}% (1-{int(self.percentile_values[0])} streak length)"
             elif i == self.NUM_CLUSTERS - 1:
                 cluster_descriptions[str(
-                    i)] = f"Cluster {i}: Top {int((1-self.PERCENTILES[-1])*100)}% (longest streaks, including the {self.MULTIPLIER_THRESHOLD}× hit)"
+                    i)] = f"Cluster {i}: Top {int((1-self.PERCENTILES[-1])*100)}% (>{int(self.percentile_values[-1])} streak length)"
             else:
                 lower = int(self.PERCENTILES[i-1]*100)
                 upper = int(self.PERCENTILES[i]*100)
+                lower_streak = int(self.percentile_values[i-1]) + 1
+                upper_streak = int(self.percentile_values[i])
                 cluster_descriptions[str(
-                    i)] = f"Cluster {i}: {lower}-{upper} percentile (including the {self.MULTIPLIER_THRESHOLD}× hit)"
+                    i)] = f"Cluster {i}: {lower}-{upper} percentile ({lower_streak}-{upper_streak} streak length)"
 
         # Sort by probability (descending)
         sorted_results = sorted(

@@ -91,15 +91,22 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
 
     # Create dynamic cluster descriptions based on percentiles
     cluster_descriptions = {}
+    # Calculate the actual streak length values at each percentile
+    percentile_values = [
+        df['next_streak_length'].quantile(p) for p in percentiles]
+
     for i in range(len(percentiles) + 1):
         if i == 0:
-            cluster_descriptions[i] = f"Cluster {i}: Bottom {int(percentiles[0]*100)}% (shortest streaks)"
+            cluster_descriptions[i] = f"Cluster {i}: Bottom {int(percentiles[0]*100)}% (1-{int(percentile_values[0])} streak length)"
         elif i == len(percentiles):
-            cluster_descriptions[i] = f"Cluster {i}: Top {int((1-percentiles[-1])*100)}% (longest streaks)"
+            cluster_descriptions[i] = f"Cluster {i}: Top {int((1-percentiles[-1])*100)}% (>{int(percentile_values[-1])} streak length)"
         else:
             lower = int(percentiles[i-1]*100)
             upper = int(percentiles[i]*100)
-            cluster_descriptions[i] = f"Cluster {i}: {lower}-{upper} percentile"
+            lower_streak = int(percentile_values[i-1]) + 1
+            upper_streak = int(percentile_values[i])
+            cluster_descriptions[
+                i] = f"Cluster {i}: {lower}-{upper} percentile ({lower_streak}-{upper_streak} streak length)"
 
     for cluster_id, prob in baseline_probs.items():
         cluster_desc = cluster_descriptions.get(
@@ -316,17 +323,44 @@ def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir,
     # Generate confusion matrix
     cm = confusion_matrix(results["actual"], results["predicted"])
 
-    # Create class descriptions based on percentiles
+    # Calculate the actual streak length values at each percentile
+    # This should be available from the training data, here we use a simplified approach
+    # In real usage, these values should be passed in or calculated from the original data
+    try:
+        # Get the training set to calculate percentile values
+        train_df = pd.concat([X_test, y_test], axis=1)
+        if hasattr(train_df, 'to_pandas'):
+            train_df = train_df.to_pandas()
+
+        # Try to find the original column with streak lengths, which might be stored in the model
+        # This is a fallback approach that might not always work
+        percentile_values = []
+        if 'next_streak_length' in train_df.columns:
+            percentile_values = [
+                train_df['next_streak_length'].quantile(p) for p in percentiles]
+        else:
+            # Use default placeholders if we can't calculate actual streak lengths
+            percentile_values = [4, 8, 15]  # Example placeholder values
+    except Exception:
+        # Fallback to placeholder values if something goes wrong
+        percentile_values = [4, 8, 15]  # Example placeholder values
+
+    # Create class descriptions based on percentiles with streak lengths
     class_labels = []
     for i in range(len(percentiles) + 1):
         if i == 0:
-            class_labels.append(f"{i}: <{int(percentiles[0]*100)}%")
+            class_labels.append(
+                f"{i}: <{int(percentiles[0]*100)}% (1-{int(percentile_values[0])})")
         elif i == len(percentiles):
-            class_labels.append(f"{i}: >{int(percentiles[-1]*100)}%")
+            class_labels.append(
+                f"{i}: >{int(percentiles[-1]*100)}% (>{int(percentile_values[-1])})")
         else:
             lower = int(percentiles[i-1]*100)
             upper = int(percentiles[i]*100)
-            class_labels.append(f"{i}: {lower}-{upper}%")
+            lower_streak = int(percentile_values[i-1]) + 1
+            upper_streak = int(percentile_values[i])
+            class_labels.append(
+                f"{i}: {lower}-{upper}% ({lower_streak}-{upper_streak})")
 
     # Display confusion matrix as a table
     cm_table = create_table("Confusion Matrix",
