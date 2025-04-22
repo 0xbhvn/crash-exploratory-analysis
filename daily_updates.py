@@ -113,7 +113,7 @@ def save_model_snapshot(analyzer, output_dir: str = None) -> None:
         "p_hat": analyzer.p_hat,
         "multiplier_threshold": analyzer.MULTIPLIER_THRESHOLD,
         "window": analyzer.WINDOW,
-        "clusters": {str(k): v for k, v in analyzer.CLUSTERS.items()},
+        "percentiles": analyzer.PERCENTILES,
         "test_frac": analyzer.TEST_FRAC,
         "data_rows": len(analyzer.df)
     }
@@ -131,6 +131,7 @@ def save_model_snapshot(analyzer, output_dir: str = None) -> None:
         "Metadata Path": meta_path,
         "Total Rows": len(analyzer.df),
         f"{analyzer.MULTIPLIER_THRESHOLD}× Rate": f"{analyzer.p_hat:.4f}",
+        "Percentiles": str(analyzer.PERCENTILES),
         "Snapshot Directory": snapshot_dir
     }
     create_stats_table("Model Snapshot Summary", snapshot_info)

@@ -40,27 +40,28 @@ class CrashStreakAnalyzer:
     def __init__(self,
                  multiplier_threshold: float = 10.0,
                  window: int = 50,
-                 clusters: Dict[int, Tuple[int, int]] = None,
                  test_frac: float = 0.2,
                  random_seed: int = 42,
-                 output_dir: str = './output'):
+                 output_dir: str = './output',
+                 percentiles: List[float] = [0.25, 0.50, 0.75]):
         """
         Initialize the analyzer with configuration parameters.
 
         Args:
             multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
             window: Rolling window size for feature engineering
-            clusters: Dictionary mapping cluster IDs to (min, max) streak length ranges
             test_frac: Fraction of data to use for testing
             random_seed: Random seed for reproducibility
             output_dir: Directory to save outputs
+            percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
         """
         self.MULTIPLIER_THRESHOLD = multiplier_threshold
         self.WINDOW = window
-        self.CLUSTERS = clusters or {0: (1, 5), 1: (6, 12), 2: (13, 9999)}
         self.TEST_FRAC = test_frac
         self.RANDOM_SEED = random_seed
         self.output_dir = output_dir
+        self.PERCENTILES = percentiles
+        self.NUM_CLUSTERS = len(percentiles) + 1
 
         # Create output directory if it doesn't exist
         if not os.path.exists(output_dir):
@@ -73,6 +74,7 @@ class CrashStreakAnalyzer:
         self.bst_final = None
         self.p_hat = None
         self.baseline_probs = None
+        self.percentile_values = None
 
         # Display initialization info in a panel
         config_info = (
@@ -80,18 +82,35 @@ class CrashStreakAnalyzer:
             f"Window Size: {window}\n"
             f"Test Fraction: {test_frac}\n"
             f"Random Seed: {random_seed}\n"
-            f"Output Directory: {output_dir}"
+            f"Output Directory: {output_dir}\n"
+            f"Percentiles: {percentiles}"
         )
         print_panel(config_info, title="Analyzer Configuration", style="blue")
 
-        # Display cluster definitions
-        clusters_to_display = self.CLUSTERS
-        cluster_table = create_table("Streak Length Clusters", [
-                                     "Cluster ID", "Min Length", "Max Length"])
-        for cluster_id, (min_len, max_len) in clusters_to_display.items():
-            max_display = "∞" if max_len > 1000 else str(max_len)
-            add_table_row(cluster_table, [cluster_id, min_len, max_display])
+        # Display information about percentile-based clusters
+        cluster_table = create_table("Percentile-Based Clustering", [
+                                     "Cluster ID", "Description"])
+
+        # Create cluster descriptions based on percentiles
+        cluster_descriptions = []
+        for i in range(len(percentiles) + 1):
+            if i == 0:
+                description = f"Cluster {i}: Bottom {int(percentiles[0]*100)}% (shortest streaks)"
+            elif i == len(percentiles):
+                description = f"Cluster {i}: Top {int((1-percentiles[-1])*100)}% (longest streaks)"
+            else:
+                lower = int(percentiles[i-1]*100)
+                upper = int(percentiles[i]*100)
+                description = f"Cluster {i}: {lower}-{upper} percentile"
+
+            cluster_descriptions.append([str(i), description])
+
+        for cluster_id, description in cluster_descriptions:
+            add_table_row(cluster_table, [cluster_id, description])
         display_table(cluster_table)
+
+        print_info(
+            "Streak length clusters will be determined dynamically based on provided percentiles")
 
     def load_data(self, csv_path: str) -> pd.DataFrame:
         """
@@ -189,24 +208,42 @@ class CrashStreakAnalyzer:
 
     def prepare_features(self) -> pd.DataFrame:
         """
-        Prepare features for machine learning.
+        Prepare features for machine learning using percentile-based clustering.
 
         Returns:
-            DataFrame with features and target
+            DataFrame with features and target clustered by percentiles
         """
         print_info("Preparing features for machine learning")
         self.df, self.feature_cols = data_processing.prepare_features(
-            self.df, self.WINDOW, self.CLUSTERS, self.MULTIPLIER_THRESHOLD)
+            self.df, self.WINDOW,
+            multiplier_threshold=self.MULTIPLIER_THRESHOLD,
+            percentiles=self.PERCENTILES)
+
+        # Get the percentile values for display purposes
+        if 'next_streak_length' in self.df.columns:
+            self.percentile_values = [
+                self.df['next_streak_length'].quantile(p) for p in self.PERCENTILES]
 
         # Display feature information
         feature_info = {
             "Number of Features": len(self.feature_cols),
             "Samples": len(self.df),
             "Target Classes": len(self.df["target_cluster"].unique()),
-            "Class 0 (Short Streaks)": (self.df["target_cluster"] == 0).sum(),
-            "Class 1 (Medium Streaks)": (self.df["target_cluster"] == 1).sum(),
-            "Class 2 (Long Streaks)": (self.df["target_cluster"] == 2).sum(),
         }
+
+        # Add class counts to feature_info
+        for i in range(self.NUM_CLUSTERS):
+            if i == 0:
+                description = f"Class {i} (Bottom {int(self.PERCENTILES[0]*100)}%)"
+            elif i == self.NUM_CLUSTERS - 1:
+                description = f"Class {i} (Top {int((1-self.PERCENTILES[-1])*100)}%)"
+            else:
+                lower = int(self.PERCENTILES[i-1]*100)
+                upper = int(self.PERCENTILES[i]*100)
+                description = f"Class {i} ({lower}-{upper}%)"
+
+            feature_info[description] = (self.df["target_cluster"] == i).sum()
+
         create_stats_table("Feature Matrix Information", feature_info)
 
         # Display sample of features
@@ -244,10 +281,12 @@ class CrashStreakAnalyzer:
             Trained XGBoost model
         """
         print_info("Training model to predict streak length clusters")
+
         self.bst_final, self.baseline_probs, self.p_hat = modeling.train_model(
-            self.df, self.feature_cols, self.CLUSTERS,
+            self.df, self.feature_cols,
             self.TEST_FRAC, self.RANDOM_SEED, eval_folds,
-            self.output_dir, self.MULTIPLIER_THRESHOLD
+            self.output_dir, self.MULTIPLIER_THRESHOLD,
+            percentiles=self.PERCENTILES
         )
 
         # Generate feature importance plot
@@ -266,7 +305,16 @@ class CrashStreakAnalyzer:
 
             # Add baseline probabilities
             for cluster_id, prob in self.baseline_probs.items():
-                cluster_name = ["Short", "Medium", "Long"][cluster_id]
+                # Create cluster label based on percentiles
+                if cluster_id == 0:
+                    cluster_name = f"Bottom {int(self.PERCENTILES[0]*100)}%"
+                elif cluster_id == len(self.PERCENTILES):
+                    cluster_name = f"Top {int((1-self.PERCENTILES[-1])*100)}%"
+                else:
+                    lower = int(self.PERCENTILES[cluster_id-1]*100)
+                    upper = int(self.PERCENTILES[cluster_id]*100)
+                    cluster_name = f"{lower}-{upper}%"
+
                 metrics[f"Baseline Prob. ({cluster_name})"] = f"{prob * 100:.2f}%"
 
             create_stats_table("Model Evaluation", metrics)
@@ -288,19 +336,28 @@ class CrashStreakAnalyzer:
 
         results = modeling.predict_next_cluster(
             self.bst_final, last_window_multipliers,
-            self.WINDOW, self.feature_cols, self.MULTIPLIER_THRESHOLD
+            self.WINDOW, self.feature_cols, self.MULTIPLIER_THRESHOLD,
+            percentiles=self.PERCENTILES
         )
 
         # Display prediction results in a table
         prediction_table = create_table(
             "Prediction Results", ["Cluster", "Description", "Probability"])
 
-        # Map cluster IDs to descriptions (updated to include the hit game in the streak)
-        cluster_descriptions = {
-            "0": f"Short Streak (1-5 games, including the {self.MULTIPLIER_THRESHOLD}× hit)",
-            "1": f"Medium Streak (6-12 games, including the {self.MULTIPLIER_THRESHOLD}× hit)",
-            "2": f"Long Streak (13+ games, including the {self.MULTIPLIER_THRESHOLD}× hit)"
-        }
+        # Generate cluster descriptions based on percentiles
+        cluster_descriptions = {}
+        for i in range(self.NUM_CLUSTERS):
+            if i == 0:
+                cluster_descriptions[str(
+                    i)] = f"Cluster {i}: Bottom {int(self.PERCENTILES[0]*100)}% (shortest streaks, including the {self.MULTIPLIER_THRESHOLD}× hit)"
+            elif i == self.NUM_CLUSTERS - 1:
+                cluster_descriptions[str(
+                    i)] = f"Cluster {i}: Top {int((1-self.PERCENTILES[-1])*100)}% (longest streaks, including the {self.MULTIPLIER_THRESHOLD}× hit)"
+            else:
+                lower = int(self.PERCENTILES[i-1]*100)
+                upper = int(self.PERCENTILES[i]*100)
+                cluster_descriptions[str(
+                    i)] = f"Cluster {i}: {lower}-{upper} percentile (including the {self.MULTIPLIER_THRESHOLD}× hit)"
 
         # Sort by probability (descending)
         sorted_results = sorted(

@@ -78,6 +78,9 @@ python main.py --input games.csv --output_dir ./results --save_plots
 
 # Run analysis with a different multiplier threshold (e.g. 2×)
 python main.py --input games.csv --multiplier_threshold 2.0 --save_plots
+
+# Run analysis with custom percentile boundaries for clustering
+python main.py --input games.csv --percentiles 0.33,0.66 --save_plots
 ```
 
 This will:
@@ -89,6 +92,25 @@ This will:
 5. Prepare features for machine learning
 6. Train a model to predict streak length clusters
 7. Save results to the specified output directory
+
+### Percentile-Based Clustering
+
+The analysis now supports customizable percentile boundaries for clustering streak lengths. By default, the system uses quartiles (25%, 50%, 75%), creating 4 clusters:
+
+- Cluster 0: Bottom 25% (shortest streaks)
+- Cluster 1: 25-50 percentile
+- Cluster 2: 50-75 percentile
+- Cluster 3: Top 25% (longest streaks)
+
+You can customize these boundaries using the `--percentiles` parameter with comma-separated values:
+
+```bash
+# Create 3 clusters using tertiles (0-33%, 33-66%, 66-100%)
+python main.py --percentiles 0.33,0.66
+
+# Create 5 clusters with custom boundaries
+python main.py --percentiles 0.20,0.40,0.60,0.80
+```
 
 ### Daily Updates
 
@@ -119,6 +141,7 @@ This will:
 - `--update_csv`: Update the CSV data from the database before analysis
 - `--full_fetch`: Fetch all data instead of just new records (with --update_csv)
 - `--fetch_limit`: Limit the number of rows to fetch from database
+- `--percentiles`: Comma-separated list of percentile boundaries for clustering (default: 0.25,0.50,0.75)
 
 ## Outputs
 

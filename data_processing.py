@@ -10,6 +10,7 @@ import logging
 import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Optional
+from sklearn.preprocessing import StandardScaler
 
 # Import rich logging
 from logger_config import (
@@ -117,16 +118,17 @@ def calculate_streak_percentiles(streak_lengths: List[int]) -> Dict[str, float]:
     return percentiles
 
 
-def add_rolling_features(frame: pd.DataFrame, window: int) -> pd.DataFrame:
+def add_rolling_features(frame: pd.DataFrame, window: int, multiplier_threshold: float = 10.0) -> Tuple[pd.DataFrame, List[str]]:
     """
-    Add rolling window features to the dataframe.
+    Add rolling window features to DataFrame.
 
     Args:
-        frame: DataFrame to add features to
+        frame: DataFrame with game data
         window: Rolling window size
+        multiplier_threshold: Threshold for considering a multiplier as a hit
 
     Returns:
-        DataFrame with added features
+        Tuple containing processed DataFrame and list of feature column names
     """
     print_info(f"Adding rolling window features (window={window})")
 
@@ -140,110 +142,162 @@ def add_rolling_features(frame: pd.DataFrame, window: int) -> pd.DataFrame:
 
     print_info(f"Added 6 rolling features: mean, std, max, min, pct_gt2, pct_gt5")
 
-    return frame
+    # Define feature columns
+    feature_cols = [
+        # Rolling statistics features
+        f"mean_{window}",
+        f"std_{window}",
+        f"max_{window}",
+        f"min_{window}",
+        f"pct_gt2_{window}",
+        f"pct_gt5_{window}"
+    ]
+
+    # Add interaction features if all components are present
+    interaction_features = [
+        (f"mean_{window}", f"pct_gt2_{window}"),
+        (f"mean_{window}", f"pct_gt5_{window}"),
+        (f"mean_{window}", f"std_{window}")
+    ]
+
+    for feat1, feat2 in interaction_features:
+        if feat1 in frame.columns and feat2 in frame.columns:
+            feat_name = f"{feat1}_x_{feat2}"
+            frame[feat_name] = frame[feat1] * frame[feat2]
+            feature_cols.append(feat_name)
+
+    # Feature scaling
+    scaler = StandardScaler()
+    frame[feature_cols] = scaler.fit_transform(frame[feature_cols])
+
+    # Summary information
+    logger.info(f"Prepared {len(feature_cols)} features for machine learning")
+    logger.info(f"Final feature matrix shape: {frame.shape}")
+
+    return frame, feature_cols
 
 
-def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[int, int]], multiplier_threshold: float = 10.0) -> Tuple[pd.DataFrame, List[str]]:
+def prepare_features(df: pd.DataFrame,
+                     window: int,
+                     multiplier_threshold: float = 10.0,
+                     percentiles: List[float] = [0.25, 0.50, 0.75]
+                     ) -> Tuple[pd.DataFrame, List[str]]:
     """
-    Prepare features for machine learning, including:
-    - Mark multiplier threshold hits
-    - Calculate distance to next threshold hit (including the hit)
-    - Create cluster labels
-    - Generate rolling window features
+    Prepare features for machine learning model training.
+
+    This function creates rolling window features and labels each target based on the
+    length of the next streak that includes a hit at or above the multiplier threshold.
+    The clustering is done using customizable percentiles of streak lengths.
 
     Args:
         df: DataFrame with game data
         window: Rolling window size for feature engineering
-        clusters: Dictionary mapping cluster IDs to (min, max) streak length ranges
-        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
+        multiplier_threshold: Threshold for considering a multiplier as a hit
+        percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
 
     Returns:
-        Tuple of (DataFrame with features and target, list of feature column names)
+        Tuple of (DataFrame with features, list of feature column names)
     """
-    logger.info("Preparing features for machine learning")
+    logger.info(f"Preparing features with window={window}")
 
-    # Sort by Game ID to ensure chronological order
-    df = df.sort_values("Game ID").reset_index(drop=True)
+    # Feature engineering - Add rolling window features
+    df, rolling_feat_cols = add_rolling_features(
+        df, window, multiplier_threshold)
 
-    # Mark threshold hits
-    hit_col = f"is_hit{int(multiplier_threshold) if multiplier_threshold.is_integer() else multiplier_threshold}"
-    df[hit_col] = (df["Bust"] >= multiplier_threshold).astype(int)
-    print_info(
-        f"Marked {df[hit_col].sum()} {multiplier_threshold}× hits out of {len(df)} games")
+    feature_cols = rolling_feat_cols.copy()
+    logger.debug(f"Created {len(feature_cols)} features")
 
-    # Distance to next threshold hit (including the hit game itself)
-    n = len(df)
-    gap = np.empty(n, dtype=int)
-    dist = n  # start with a large but finite number
+    # Add hit column for the multiplier threshold
+    # Convert threshold to string (integer if whole number)
+    threshold_str = str(int(multiplier_threshold)
+                        if multiplier_threshold.is_integer() else multiplier_threshold)
+    hit_col = f"is_hit{threshold_str}"
+    df[hit_col] = (df['Bust'] >= multiplier_threshold).astype(int)
+    logger.info(
+        f"Added column {hit_col} to track hits at or above {multiplier_threshold}×")
 
-    for i in range(n - 1, -1, -1):
-        dist += 1  # increment distance for all games
-        if df.at[i, hit_col]:
-            gap[i] = 0  # this game is a threshold hit
-            dist = 0  # reset counter from this game
+    # Create target variable - Get the streak length that includes the next hit
+    # More efficient algorithm to calculate next streak lengths
+    print_info("Calculating next streak lengths (this may take a moment)...")
+
+    # Find all hit positions
+    hit_positions = np.where(df['Bust'].values >= multiplier_threshold)[0]
+
+    # Create a mapping for each position to the next hit position
+    next_hit_map = {}
+    for i in range(len(hit_positions) - 1):
+        current_pos = hit_positions[i]
+        next_pos = hit_positions[i + 1]
+        # For all positions between current and next hit, the next hit is at next_pos
+        for pos in range(current_pos + 1, next_pos + 1):
+            next_hit_map[pos] = next_pos
+
+    # Calculate next streak lengths for the window positions
+    next_streak_lengths = []
+    max_valid_idx = len(df) - 1
+
+    for i in range(len(df) - window):
+        start_idx = i + window
+        if start_idx in next_hit_map and start_idx <= max_valid_idx:
+            # Calculate streak length (add 1 because we include the hit game)
+            streak_length = next_hit_map[start_idx] - start_idx + 1
+            next_streak_lengths.append(streak_length)
         else:
-            gap[i] = dist  # distance to next threshold hit
+            next_streak_lengths.append(np.nan)
 
-    df["gap_next_hit"] = gap
-    print_info(
-        f"Calculated distance to next {multiplier_threshold}× for each game")
+    # Create a new DataFrame with features and target, dropping last window rows
+    features_df = df.iloc[:-window].copy()
+    features_df['next_streak_length'] = next_streak_lengths
 
-    # Map gap to cluster
-    def gap_to_cluster(g):
-        # Include the game with the threshold hit in the streak length
-        streak_length = g + 1  # +1 to include the hit game
+    # Remove rows with NaN target values
+    features_df = features_df.dropna(subset=['next_streak_length'])
+    logger.info(f"DataFrame after dropping NaN targets: {features_df.shape}")
 
-        # If this is a threshold hit game itself, set streak_length to 1
-        if g == 0:
-            streak_length = 1
+    # Calculate percentile boundaries for clustering
+    percentile_values = [
+        features_df['next_streak_length'].quantile(p) for p in percentiles]
 
-        for c, (lo, hi) in clusters.items():
-            if lo <= streak_length <= hi:
-                return c
-        return np.nan  # anything >9999 → NaN
+    # Log percentile boundaries
+    percentile_info = ", ".join(
+        [f"P{int(p*100)}={val:.1f}" for p, val in zip(percentiles, percentile_values)])
+    logger.info(f"Streak length percentile boundaries: {percentile_info}")
 
-    df["target_cluster"] = df["gap_next_hit"].map(gap_to_cluster)
-    df = df.dropna(subset=["target_cluster"]).reset_index(drop=True)
-    df["target_cluster"] = df["target_cluster"].astype(int)
+    # Create conditions for clustering based on percentile boundaries
+    conditions = []
+    for i in range(len(percentile_values) + 1):
+        if i == 0:
+            # First cluster: <= first percentile
+            conditions.append(
+                features_df['next_streak_length'] <= percentile_values[0])
+        elif i == len(percentile_values):
+            # Last cluster: > last percentile
+            conditions.append(
+                features_df['next_streak_length'] > percentile_values[-1])
+        else:
+            # Middle clusters: between adjacent percentiles
+            conditions.append(
+                (features_df['next_streak_length'] > percentile_values[i-1]) &
+                (features_df['next_streak_length'] <= percentile_values[i])
+            )
 
-    # Display cluster statistics
-    cluster_stats = {}
-    for cluster_id in range(len(clusters)):
-        count = (df["target_cluster"] == cluster_id).sum()
-        percentage = count / len(df) * 100
-        cluster_stats[f"Cluster {cluster_id}"] = f"{count} games ({percentage:.1f}%)"
+    # Create clusters (0 to n, where n is the number of percentile boundaries + 1)
+    clusters = list(range(len(percentile_values) + 1))
+    features_df['target_cluster'] = np.select(
+        conditions, clusters, default=np.nan)
 
-    create_stats_table("Target Cluster Distribution", cluster_stats)
+    # Log cluster counts
+    cluster_counts = []
+    for i in clusters:
+        count = (features_df['target_cluster'] == i).sum()
+        percentage = count / len(features_df) * 100
+        cluster_counts.append(f"{i}: {count} ({percentage:.1f}%)")
 
-    # Add rolling window features
-    df = add_rolling_features(df, window)
+    logger.info(
+        f"Percentile-based cluster counts: {', '.join(cluster_counts)}")
+    logger.info(
+        f"Final feature matrix shape: {features_df[feature_cols].shape}")
 
-    # Add lag features
-    print_info(f"Adding {window} lag features")
-    for lag in range(1, window + 1):
-        df[f"m_{lag}"] = df["Bust"].shift(lag)
-
-    # Drop rows with NaNs (from shifting)
-    rows_before = len(df)
-    df = df.dropna().reset_index(drop=True)
-    rows_after = len(df)
-    print_info(f"Dropped {rows_before - rows_after} rows with NaN values")
-
-    # Identify feature columns
-    feature_cols = [c for c in df.columns if c not in
-                    ("Game ID", hit_col, "gap_next_hit", "target_cluster")]
-
-    feature_stats = {
-        "Total Features": len(feature_cols),
-        "Rolling Features": sum(1 for c in feature_cols if c.startswith(("mean_", "std_", "max_", "min_", "pct_"))),
-        "Lag Features": sum(1 for c in feature_cols if c.startswith("m_")),
-        "Final Matrix Shape": f"{df[feature_cols].shape[0]} rows × {df[feature_cols].shape[1]} columns"
-    }
-    create_stats_table("Feature Engineering Summary", feature_stats)
-
-    print_success("Feature preparation complete")
-
-    return df, feature_cols
+    return features_df, feature_cols
 
 
 def make_feature_vector(last_window_multipliers: List[float], window: int, feature_cols: List[str]) -> pd.Series:

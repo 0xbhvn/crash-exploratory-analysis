@@ -27,21 +27,22 @@ from logger_config import (
 logger = logging.getLogger(__name__)
 
 
-def train_model(df: pd.DataFrame, feature_cols: List[str], clusters: Dict[int, Tuple[int, int]],
+def train_model(df: pd.DataFrame, feature_cols: List[str],
                 test_frac: float, random_seed: int, eval_folds: int = 5,
-                output_dir: str = './output', multiplier_threshold: float = 10.0) -> Tuple[xgb.Booster, Dict[str, float], float]:
+                output_dir: str = './output', multiplier_threshold: float = 10.0,
+                percentiles: List[float] = [0.25, 0.50, 0.75]) -> Tuple[xgb.Booster, Dict[str, float], float]:
     """
     Train an XGBoost model for streak length prediction.
 
     Args:
         df: DataFrame with features and target
         feature_cols: List of feature column names
-        clusters: Dictionary mapping cluster IDs to (min, max) streak length ranges
         test_frac: Fraction of data to use for testing
         random_seed: Random seed for reproducibility
         eval_folds: Number of folds for cross-validation
         output_dir: Directory to save model and outputs
         multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
+        percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
 
     Returns:
         Tuple of (trained model, baseline probabilities, empirical hit rate)
@@ -75,18 +76,34 @@ def train_model(df: pd.DataFrame, feature_cols: List[str], clusters: Dict[int, T
         f"Baseline probabilities: {', '.join([f'Class {k}: {v:.3f}' for k, v in baseline_probs.items()])}")
 
     # Calculate empirical hit rate
-    p_hat = df["is_hit{}".format(int(multiplier_threshold) if multiplier_threshold.is_integer(
-    ) else multiplier_threshold)].mean()
+    hit_col = "is_hit{}".format(int(
+        multiplier_threshold) if multiplier_threshold.is_integer() else multiplier_threshold)
+    if hit_col in df.columns:
+        p_hat = df[hit_col].mean()
+    else:
+        # Fallback if column doesn't exist
+        p_hat = (df['Bust'] >= multiplier_threshold).mean()
     print_info(f"Empirical {multiplier_threshold}× hit rate: {p_hat:.4f}")
 
     # Display baseline probabilities
     baseline_table = create_table("Baseline Probabilities", [
                                   "Cluster", "Description", "Probability"])
+
+    # Create dynamic cluster descriptions based on percentiles
+    cluster_descriptions = {}
+    for i in range(len(percentiles) + 1):
+        if i == 0:
+            cluster_descriptions[i] = f"Cluster {i}: Bottom {int(percentiles[0]*100)}% (shortest streaks)"
+        elif i == len(percentiles):
+            cluster_descriptions[i] = f"Cluster {i}: Top {int((1-percentiles[-1])*100)}% (longest streaks)"
+        else:
+            lower = int(percentiles[i-1]*100)
+            upper = int(percentiles[i]*100)
+            cluster_descriptions[i] = f"Cluster {i}: {lower}-{upper} percentile"
+
     for cluster_id, prob in baseline_probs.items():
-        cluster_range = clusters[cluster_id]
-        cluster_desc = f"Streak Length {cluster_range[0]}-{cluster_range[1]}"
-        if cluster_range[1] > 1000:
-            cluster_desc = f"Streak Length {cluster_range[0]}+"
+        cluster_desc = cluster_descriptions.get(
+            cluster_id, f"Cluster {cluster_id}")
         add_table_row(baseline_table, [
                       cluster_id, cluster_desc, f"{prob*100:.2f}%"])
     display_table(baseline_table)
@@ -100,9 +117,10 @@ def train_model(df: pd.DataFrame, feature_cols: List[str], clusters: Dict[int, T
     dtrain_full = xgb.DMatrix(X_train, label=y_train,
                               feature_names=feature_cols)
 
+    num_classes = len(baseline_probs)
     params = dict(
         objective="multi:softprob",
-        num_class=len(clusters),
+        num_class=num_classes,
         max_depth=6,
         eta=0.05,
         subsample=0.8,
@@ -207,7 +225,7 @@ def train_model(df: pd.DataFrame, feature_cols: List[str], clusters: Dict[int, T
 
     # Generate confusion matrix
     generate_confusion_matrix(
-        X_test, y_test, bst_final, feature_cols, output_dir)
+        X_test, y_test, bst_final, feature_cols, output_dir, percentiles)
 
     return bst_final, baseline_probs, p_hat
 
@@ -264,7 +282,8 @@ def expected_calibration_error(y_true, y_prob, n_bins=10) -> float:
     return np.abs(prob_true - prob_pred).mean()
 
 
-def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir) -> None:
+def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir,
+                              percentiles: List[float] = [0.25, 0.50, 0.75]) -> None:
     """
     Generate and save confusion matrix for test set.
 
@@ -274,30 +293,49 @@ def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir) -
         model: Trained XGBoost model
         feature_cols: List of feature column names
         output_dir: Directory to save outputs
+        percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
     """
     # Prepare data
     dtest = xgb.DMatrix(X_test, feature_names=feature_cols)
     probs = model.predict(dtest)
 
+    # Get the number of classes from the probabilities
+    num_classes = probs.shape[1]
+
+    # Create column names based on the number of classes
+    prob_columns = [f"prob_class{i}" for i in range(num_classes)]
+
     # Assemble into a DataFrame
     results = pd.DataFrame(probs,
-                           columns=["prob_short", "prob_medium", "prob_long"],
+                           columns=prob_columns,
                            index=X_test.index)
     results["actual"] = y_test.values
-    results["predicted"] = results[["prob_short", "prob_medium", "prob_long"]].idxmax(axis=1) \
-        .map({"prob_short": 0, "prob_medium": 1, "prob_long": 2})
+    results["predicted"] = results[prob_columns].idxmax(axis=1) \
+        .map({f"prob_class{i}": i for i in range(num_classes)})
 
     # Generate confusion matrix
     cm = confusion_matrix(results["actual"], results["predicted"])
 
+    # Create class descriptions based on percentiles
+    class_labels = []
+    for i in range(len(percentiles) + 1):
+        if i == 0:
+            class_labels.append(f"{i}: <{int(percentiles[0]*100)}%")
+        elif i == len(percentiles):
+            class_labels.append(f"{i}: >{int(percentiles[-1]*100)}%")
+        else:
+            lower = int(percentiles[i-1]*100)
+            upper = int(percentiles[i]*100)
+            class_labels.append(f"{i}: {lower}-{upper}%")
+
     # Display confusion matrix as a table
-    cm_table = create_table("Confusion Matrix", [
-                            ""] + [f"Predicted {i}" for i in range(cm.shape[1])])
+    cm_table = create_table("Confusion Matrix",
+                            [""] + [f"Pred {label}" for label in class_labels])
 
     # Add rows for the confusion matrix
     for i in range(cm.shape[0]):
-        row_data = [f"Actual {i}"] + [str(cm[i, j])
-                                      for j in range(cm.shape[1])]
+        row_data = [f"Act {class_labels[i]}"] + [str(cm[i, j])
+                                                 for j in range(cm.shape[1])]
         add_table_row(cm_table, row_data)
 
     display_table(cm_table)
@@ -326,7 +364,7 @@ def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir) -
                                          recall) if (precision + recall) > 0 else 0
 
         add_table_row(
-            cm_metrics, [str(i), f"{precision:.4f}", f"{recall:.4f}", f"{f1:.4f}"])
+            cm_metrics, [class_labels[i], f"{precision:.4f}", f"{recall:.4f}", f"{f1:.4f}"])
 
     display_table(cm_metrics)
 
@@ -337,7 +375,8 @@ def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir) -
 
 
 def predict_next_cluster(model, last_window_multipliers: List[float], window: int,
-                         feature_cols: List[str], multiplier_threshold: float = 10.0) -> Dict[str, float]:
+                         feature_cols: List[str], multiplier_threshold: float = 10.0,
+                         percentiles: List[float] = [0.25, 0.50, 0.75]) -> Dict[str, float]:
     """
     Predict the next cluster based on recent multipliers.
 
@@ -347,6 +386,7 @@ def predict_next_cluster(model, last_window_multipliers: List[float], window: in
         window: Rolling window size
         feature_cols: List of feature column names
         multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
+        percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
 
     Returns:
         Dictionary of cluster probabilities

@@ -6,7 +6,7 @@ Main entry point for Crash Game Streak Analysis.
 This script provides the command-line interface and coordinates the analysis.
 
 Usage:
-    python main.py --input games.csv [--multiplier_threshold 10.0] [--window 50] [--test_frac 0.2] [--output_dir ./output]
+    python main.py --input games.csv [--multiplier_threshold 10.0] [--window 50] [--test_frac 0.2] [--output_dir ./output] [--percentiles 0.25,0.50,0.75]
 """
 
 from analyzer import CrashStreakAnalyzer
@@ -60,6 +60,8 @@ def parse_arguments():
                         help='Path to new data file for model update')
     parser.add_argument('--drift_threshold', type=float, default=0.005,
                         help='Threshold for detecting distribution drift')
+    parser.add_argument('--percentiles', default='0.25,0.50,0.75',
+                        help='Comma-separated list of percentile boundaries for clustering (default: 0.25,0.50,0.75)')
 
     # Flags for database fetch
     parser.add_argument('--update_csv', action='store_true',
@@ -78,6 +80,9 @@ def main():
     """
     # Parse command line arguments
     args = parse_arguments()
+
+    # Parse percentiles from command line
+    percentiles = [float(p) for p in args.percentiles.split(',')]
 
     # Display welcome message
     print_panel(
@@ -120,7 +125,7 @@ def main():
             print_warning("Continuing with existing data...")
 
     logger.info(f"Starting Crash {args.multiplier_threshold}× Streak Analysis with input={args.input}, "
-                f"window={args.window}, test_frac={args.test_frac}")
+                f"window={args.window}, test_frac={args.test_frac}, percentiles={percentiles}")
 
     # Initialize analyzer
     analyzer = CrashStreakAnalyzer(
@@ -128,7 +133,8 @@ def main():
         window=args.window,
         test_frac=args.test_frac,
         random_seed=args.random_seed,
-        output_dir=args.output_dir
+        output_dir=args.output_dir,
+        percentiles=percentiles
     )
 
     # Load data
