@@ -120,7 +120,7 @@ def fetch_incremental_data(output_file: str = 'games.csv',
         # Prepare query for new data
         query = "SELECT game_id as \"Game ID\", crash_point as \"Bust\" FROM crash_games"
         if last_game_id:
-            query += f" WHERE game_id > {last_game_id}"
+            query += f" WHERE CAST(game_id AS BIGINT) > {last_game_id}"
         query += " ORDER BY game_id DESC"
 
         # Execute query
