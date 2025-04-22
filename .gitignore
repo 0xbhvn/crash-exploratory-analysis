@@ -1,0 +1,65 @@
+# Virtual Environment
+crash_env/
+venv/
+env/
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data files
+*.csv
+*.pkl
+*.h5
+*.parquet
+*.xlsx
+*.xls
+
+# Output directories
+output/
+results/
+snapshots/
+snapshot_*/
+
+# Logging
+*.log
+logs/
+crash_analysis.log
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.project
+.pydevproject
+.settings/
+
+# Specific to crash analysis project
+xgboost_model.pkl
+streak_lengths.csv
+confusion_matrix.csv 
