@@ -10,6 +10,7 @@ numpy==2.2.5
 packaging==25.0
 pandas==2.2.3
 pillow==11.2.1
+psycopg2-binary==2.9.10
 Pygments==2.19.1
 pyparsing==3.2.3
 python-dateutil==2.9.0.post0
