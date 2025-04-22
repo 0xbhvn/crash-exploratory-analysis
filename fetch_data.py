@@ -15,9 +15,13 @@ from sqlalchemy import create_engine, text
 from datetime import datetime
 from typing import Optional
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Ensure logs directory exists
+Path('logs').mkdir(exist_ok=True)
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +33,7 @@ def setup_logging():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler('data_fetch.log')
+            logging.FileHandler('logs/data_fetch.log')
         ]
     )
 
@@ -58,7 +62,7 @@ def fetch_crash_data(output_file: str = 'games.csv', limit: Optional[int] = None
         engine = create_engine(database_url)
 
         # Prepare query
-        query = "SELECT game_id as \"Game ID\", crash_point as \"Bust\" FROM crash_games"
+        query = "SELECT game_id as \"Game ID\", crash_point as \"Bust\" FROM crash_games ORDER BY game_id DESC"
         if limit:
             query += f" LIMIT {limit}"
 
@@ -117,7 +121,7 @@ def fetch_incremental_data(output_file: str = 'games.csv',
         query = "SELECT game_id as \"Game ID\", crash_point as \"Bust\" FROM crash_games"
         if last_game_id:
             query += f" WHERE game_id > {last_game_id}"
-        query += " ORDER BY game_id ASC"
+        query += " ORDER BY game_id DESC"
 
         # Execute query
         logger.info("Executing database query for new data...")
