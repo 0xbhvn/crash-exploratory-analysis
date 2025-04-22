@@ -62,7 +62,7 @@ def fetch_crash_data(output_file: str = 'games.csv', limit: Optional[int] = None
         engine = create_engine(database_url)
 
         # Prepare query
-        query = "SELECT game_id as \"Game ID\", crash_point as \"Bust\" FROM crash_games ORDER BY game_id DESC"
+        query = "SELECT game_id as \"Game ID\", crash_point as \"Bust\" FROM crash_games ORDER BY game_id ASC"
         if limit:
             query += f" LIMIT {limit}"
 
@@ -121,7 +121,7 @@ def fetch_incremental_data(output_file: str = 'games.csv',
         query = "SELECT game_id as \"Game ID\", crash_point as \"Bust\" FROM crash_games"
         if last_game_id:
             query += f" WHERE CAST(game_id AS BIGINT) > {last_game_id}"
-        query += " ORDER BY game_id DESC"
+        query += " ORDER BY game_id ASC"
 
         # Execute query
         logger.info("Executing database query for new data...")
