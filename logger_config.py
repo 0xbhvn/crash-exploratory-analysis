@@ -9,9 +9,12 @@ This module sets up rich logging with progress bars for the application.
 import sys
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
 from rich.progress import (
     Progress,
     SpinnerColumn,
@@ -147,6 +150,80 @@ def complete_progress(progress):
     if progress:
         progress.stop()
 
+# Rich table utility functions
+
+
+def create_table(title: str, columns: List[str], highlight: bool = True) -> Table:
+    """
+    Create a rich table with the given title and columns.
+
+    Args:
+        title: Table title
+        columns: List of column names
+        highlight: Whether to highlight alternate rows
+
+    Returns:
+        Rich Table object
+    """
+    table = Table(title=title, show_header=True, header_style="bold magenta")
+
+    # Add columns
+    for column in columns:
+        table.add_column(column)
+
+    return table
+
+
+def add_table_row(table: Table, values: List[Any]) -> Table:
+    """
+    Add a row to a rich table.
+
+    Args:
+        table: Rich Table object
+        values: List of values for the row
+
+    Returns:
+        Updated Table
+    """
+    # Convert all values to strings
+    str_values = [str(value) for value in values]
+    table.add_row(*str_values)
+    return table
+
+
+def display_table(table: Table) -> None:
+    """
+    Display a rich table.
+
+    Args:
+        table: Rich Table object
+    """
+    console.print(table)
+
+
+def create_stats_table(title: str, stats: Dict[str, Any]) -> None:
+    """
+    Create and display a table of statistics.
+
+    Args:
+        title: Table title
+        stats: Dictionary of statistics
+    """
+    table = Table(title=title, show_header=True, header_style="bold magenta")
+    table.add_column("Metric", style="dim")
+    table.add_column("Value", justify="right")
+
+    for key, value in stats.items():
+        # Format values appropriately
+        if isinstance(value, float):
+            formatted_value = f"{value:.4f}"
+        else:
+            formatted_value = str(value)
+
+        table.add_row(key, formatted_value)
+
+    console.print(table)
+
 # Utility to print styled messages
 
 
@@ -168,3 +245,20 @@ def print_warning(message: str):
 def print_error(message: str):
     """Print an error message with styling."""
     console.print(f"[bold red]ERROR:[/] {message}")
+
+
+def print_panel(message: str, title: str = None, style: str = "blue"):
+    """
+    Print a message in a panel with styling.
+
+    Args:
+        message: The message to display
+        title: Optional panel title
+        style: Color style for the panel
+    """
+    panel = Panel(
+        Text(message),
+        title=title,
+        border_style=style
+    )
+    console.print(panel)

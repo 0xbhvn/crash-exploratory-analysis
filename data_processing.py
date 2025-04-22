@@ -11,6 +11,12 @@ import numpy as np
 import pandas as pd
 from typing import Dict, List, Tuple, Optional
 
+# Import rich logging
+from logger_config import (
+    console, print_info, print_success, print_warning,
+    print_error, create_stats_table
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,7 +44,15 @@ def load_data(csv_path: str) -> pd.DataFrame:
     df["Game ID"] = df["Game ID"].astype(int)
     df["Bust"] = df["Bust"].astype(float)
 
-    logger.info(f"Cleaned data shape: {df.shape}")
+    # Log cleaning operations
+    cleaned_stats = {
+        "Raw Shape": str(df_raw.shape),
+        "Cleaned Shape": str(df.shape),
+        "Rows Removed": df_raw.shape[0] - df.shape[0],
+        "Columns": ", ".join(df.columns.tolist())
+    }
+    create_stats_table("Data Cleaning", cleaned_stats)
+
     return df
 
 
@@ -68,7 +82,14 @@ def analyze_streaks(df: pd.DataFrame) -> List[int]:
     # If the dataset ends without a 10×, we drop the trailing incomplete streak
     streak_lengths = [s for s in streak_lengths if s > 0]
 
-    logger.info(f"Collected {len(streak_lengths):,} streaks")
+    # Display streak statistics
+    streaks_stats = {
+        "Total 10× Hits": len(streak_lengths),
+        "Min Streak Length": min(streak_lengths) if streak_lengths else "N/A",
+        "Max Streak Length": max(streak_lengths) if streak_lengths else "N/A",
+        "Avg Streak Length": f"{np.mean(streak_lengths):.2f}" if streak_lengths else "N/A"
+    }
+    create_stats_table("Streak Analysis", streaks_stats)
 
     return streak_lengths
 
@@ -105,6 +126,8 @@ def add_rolling_features(frame: pd.DataFrame, window: int) -> pd.DataFrame:
     Returns:
         DataFrame with added features
     """
+    print_info(f"Adding rolling window features (window={window})")
+
     roll = frame["Bust"].rolling(window, min_periods=1)
     frame[f"mean_{window}"] = roll.mean()
     frame[f"std_{window}"] = roll.std().fillna(0)
@@ -112,6 +135,9 @@ def add_rolling_features(frame: pd.DataFrame, window: int) -> pd.DataFrame:
     frame[f"min_{window}"] = roll.min()
     frame[f"pct_gt2_{window}"] = frame["Bust"].gt(2).rolling(window).mean()
     frame[f"pct_gt5_{window}"] = frame["Bust"].gt(5).rolling(window).mean()
+
+    print_info(f"Added 6 rolling features: mean, std, max, min, pct_gt2, pct_gt5")
+
     return frame
 
 
@@ -138,6 +164,8 @@ def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[in
 
     # Mark 10× hits
     df["is_hit10"] = (df["Bust"] >= 10).astype(int)
+    print_info(
+        f"Marked {df['is_hit10'].sum()} 10× hits out of {len(df)} games")
 
     # Distance to next 10×
     n = len(df)
@@ -152,6 +180,7 @@ def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[in
         gap[i] = dist
 
     df["gap_next_10x"] = gap
+    print_info("Calculated distance to next 10× for each game")
 
     # Map gap to cluster
     def gap_to_cluster(g):
@@ -164,22 +193,43 @@ def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[in
     df = df.dropna(subset=["target_cluster"]).reset_index(drop=True)
     df["target_cluster"] = df["target_cluster"].astype(int)
 
-    logger.info(f"Rows with cluster label: {df.target_cluster.notna().sum()}")
+    # Display cluster statistics
+    cluster_stats = {}
+    for cluster_id in range(len(clusters)):
+        count = (df["target_cluster"] == cluster_id).sum()
+        percentage = count / len(df) * 100
+        cluster_stats[f"Cluster {cluster_id}"] = f"{count} games ({percentage:.1f}%)"
+
+    create_stats_table("Target Cluster Distribution", cluster_stats)
 
     # Add rolling window features
     df = add_rolling_features(df, window)
 
     # Add lag features
+    print_info(f"Adding {window} lag features")
     for lag in range(1, window + 1):
         df[f"m_{lag}"] = df["Bust"].shift(lag)
 
+    # Drop rows with NaNs (from shifting)
+    rows_before = len(df)
     df = df.dropna().reset_index(drop=True)
+    rows_after = len(df)
+    print_info(f"Dropped {rows_before - rows_after} rows with NaN values")
 
     # Identify feature columns
     feature_cols = [c for c in df.columns if c not in
                     ("Game ID", "is_hit10", "gap_next_10x", "target_cluster")]
 
-    logger.info(f"Final feature matrix shape: {df[feature_cols].shape}")
+    feature_stats = {
+        "Total Features": len(feature_cols),
+        "Rolling Features": sum(1 for c in feature_cols if c.startswith(("mean_", "std_", "max_", "min_", "pct_"))),
+        "Lag Features": sum(1 for c in feature_cols if c.startswith("m_")),
+        "Final Matrix Shape": f"{df[feature_cols].shape[0]} rows × {df[feature_cols].shape[1]} columns"
+    }
+    create_stats_table("Feature Engineering Summary", feature_stats)
+
+    print_success("Feature preparation complete")
+
     return df, feature_cols
 
 
@@ -198,16 +248,19 @@ def make_feature_vector(last_window_multipliers: List[float], window: int, featu
     seq = pd.Series(last_window_multipliers)
 
     feat = {}
-    feat["Bust"] = seq.iloc[-1]
+    # Add rolling features
     feat[f"mean_{window}"] = seq.mean()
     feat[f"std_{window}"] = seq.std()
     feat[f"max_{window}"] = seq.max()
     feat[f"min_{window}"] = seq.min()
-    feat[f"pct_gt2_{window}"] = (seq > 2).mean()
-    feat[f"pct_gt5_{window}"] = (seq > 5).mean()
+    feat[f"pct_gt2_{window}"] = seq.gt(2).mean()
+    feat[f"pct_gt5_{window}"] = seq.gt(5).mean()
 
-    for lag, val in enumerate(last_window_multipliers, 1):
-        feat[f"m_{lag}"] = val
+    # Add lagged values
+    for i, x in enumerate(reversed(last_window_multipliers), 1):
+        if i <= window:
+            feat[f"m_{i}"] = x
 
-    # Ensure correct order
-    return pd.Series(feat).reindex(feature_cols)
+    # Create Series with same names as training data
+    result = pd.Series({k: feat.get(k, np.nan) for k in feature_cols})
+    return result

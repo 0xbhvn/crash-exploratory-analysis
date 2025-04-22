@@ -18,6 +18,13 @@ import data_processing
 import modeling
 import visualization
 
+# Import rich logging
+from logger_config import (
+    console, create_table, display_table, add_table_row,
+    create_stats_table, print_info, print_success, print_warning,
+    print_error, print_panel
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +61,7 @@ class CrashStreakAnalyzer:
         # Create output directory if it doesn't exist
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
-            logger.info(f"Created output directory: {output_dir}")
+            print_info(f"Created output directory: {output_dir}")
 
         # Initialize attributes that will be populated later
         self.df = None
@@ -63,8 +70,23 @@ class CrashStreakAnalyzer:
         self.p_hat = None
         self.baseline_probs = None
 
-        logger.info(f"Initialized CrashStreakAnalyzer with window={window}, "
-                    f"test_frac={test_frac}, random_seed={random_seed}")
+        # Display initialization info in a panel
+        config_info = (
+            f"Window Size: {window}\n"
+            f"Test Fraction: {test_frac}\n"
+            f"Random Seed: {random_seed}\n"
+            f"Output Directory: {output_dir}"
+        )
+        print_panel(config_info, title="Analyzer Configuration", style="blue")
+
+        # Display cluster definitions
+        clusters_to_display = self.CLUSTERS
+        cluster_table = create_table("Streak Length Clusters", [
+                                     "Cluster ID", "Min Length", "Max Length"])
+        for cluster_id, (min_len, max_len) in clusters_to_display.items():
+            max_display = "∞" if max_len > 1000 else str(max_len)
+            add_table_row(cluster_table, [cluster_id, min_len, max_display])
+        display_table(cluster_table)
 
     def load_data(self, csv_path: str) -> pd.DataFrame:
         """
@@ -76,7 +98,22 @@ class CrashStreakAnalyzer:
         Returns:
             DataFrame with cleaned game data
         """
+        print_info(f"Loading data from {csv_path}")
         self.df = data_processing.load_data(csv_path)
+
+        # Display data summary
+        summary_stats = {
+            "Total Games": len(self.df),
+            "First Game ID": self.df["Game ID"].min() if not self.df.empty else "N/A",
+            "Last Game ID": self.df["Game ID"].max() if not self.df.empty else "N/A",
+            "Min Multiplier": self.df["Bust"].min() if not self.df.empty else "N/A",
+            "Max Multiplier": self.df["Bust"].max() if not self.df.empty else "N/A",
+            "Avg Multiplier": round(self.df["Bust"].mean(), 2) if not self.df.empty else "N/A",
+            "10× or Higher": (self.df["Bust"] >= 10).sum() if not self.df.empty else "N/A",
+            "10× Rate": f"{(self.df['Bust'] >= 10).mean() * 100:.2f}%" if not self.df.empty else "N/A"
+        }
+        create_stats_table("Data Summary", summary_stats)
+
         return self.df
 
     def analyze_streaks(self, save_streak_lengths: bool = True) -> List[int]:
@@ -89,18 +126,43 @@ class CrashStreakAnalyzer:
         Returns:
             List of streak lengths
         """
+        print_info("Analyzing streak lengths before 10× multipliers")
         streak_lengths = data_processing.analyze_streaks(self.df)
 
         # Calculate percentiles
         percentiles = data_processing.calculate_streak_percentiles(
             streak_lengths)
 
+        # Display percentiles in a table
+        percentiles_table = create_table(
+            "Streak Length Percentiles", ["Percentile", "Value"])
+        for percentile, value in percentiles.items():
+            add_table_row(percentiles_table, [percentile, f"{value:.1f}"])
+        display_table(percentiles_table)
+
+        # Display streak distribution
+        freq_table = create_table("Streak Length Frequency", [
+                                  "Streak Length", "Frequency", "Percentage"])
+        streak_series = pd.Series(streak_lengths)
+        value_counts = streak_series.value_counts().sort_index()
+        total_streaks = len(streak_lengths)
+
+        # Only display up to 20 rows for readability
+        for length, count in value_counts.head(20).items():
+            percentage = (count / total_streaks) * 100
+            add_table_row(freq_table, [length, count, f"{percentage:.2f}%"])
+
+        if len(value_counts) > 20:
+            add_table_row(freq_table, ["...", "...", "..."])
+
+        display_table(freq_table)
+
         # Save streak lengths if requested
         if save_streak_lengths:
             streak_file = os.path.join(self.output_dir, "streak_lengths.csv")
             pd.Series(streak_lengths, name="streak_length").to_csv(
                 streak_file, index=False)
-            logger.info(f"Saved streak lengths to {streak_file}")
+            print_info(f"Saved streak lengths to {streak_file}")
 
         return streak_lengths
 
@@ -111,10 +173,12 @@ class CrashStreakAnalyzer:
         Args:
             streak_lengths: List of streak lengths
         """
+        print_info("Generating streak length distribution plots")
         percentiles = data_processing.calculate_streak_percentiles(
             streak_lengths)
         visualization.plot_streaks(
             streak_lengths, percentiles, self.output_dir)
+        print_success("Saved streak distribution plots to output directory")
 
     def prepare_features(self) -> pd.DataFrame:
         """
@@ -123,8 +187,43 @@ class CrashStreakAnalyzer:
         Returns:
             DataFrame with features and target
         """
+        print_info("Preparing features for machine learning")
         self.df, self.feature_cols = data_processing.prepare_features(
             self.df, self.WINDOW, self.CLUSTERS)
+
+        # Display feature information
+        feature_info = {
+            "Number of Features": len(self.feature_cols),
+            "Samples": len(self.df),
+            "Target Classes": len(self.df["target_cluster"].unique()),
+            "Class 0 (Short Streaks)": (self.df["target_cluster"] == 0).sum(),
+            "Class 1 (Medium Streaks)": (self.df["target_cluster"] == 1).sum(),
+            "Class 2 (Long Streaks)": (self.df["target_cluster"] == 2).sum(),
+        }
+        create_stats_table("Feature Matrix Information", feature_info)
+
+        # Display sample of features
+        if len(self.feature_cols) > 0:
+            feature_sample = self.df[self.feature_cols +
+                                     ["target_cluster"]].head(5)
+
+            # Create a table with just a few columns for readability
+            # Show only first 5 features
+            cols_to_show = self.feature_cols[:5] + ["target_cluster"]
+
+            sample_table = create_table(
+                "Feature Sample (First 5 columns)", cols_to_show)
+            for _, row in feature_sample.iterrows():
+                row_values = [f"{row[col]:.4f}" if isinstance(row[col], float) else str(row[col])
+                              for col in cols_to_show]
+                add_table_row(sample_table, row_values)
+
+            display_table(sample_table)
+
+            if len(self.feature_cols) > 5:
+                print_info(
+                    f"Showing 5 of {len(self.feature_cols)} features. Full matrix: {self.df[self.feature_cols].shape}")
+
         return self.df
 
     def train_model(self, eval_folds: int = 5) -> xgb.Booster:
@@ -137,6 +236,7 @@ class CrashStreakAnalyzer:
         Returns:
             Trained XGBoost model
         """
+        print_info("Training model to predict streak length clusters")
         self.bst_final, self.baseline_probs, self.p_hat = modeling.train_model(
             self.df, self.feature_cols, self.CLUSTERS,
             self.TEST_FRAC, self.RANDOM_SEED, eval_folds,
@@ -146,6 +246,23 @@ class CrashStreakAnalyzer:
         # Generate feature importance plot
         visualization.plot_feature_importance(
             self.bst_final, self.feature_cols, self.output_dir)
+
+        print_success("Model training complete")
+
+        # Display model evaluation metrics if available
+        if hasattr(self.bst_final, 'best_score'):
+            metrics = {
+                "Best Validation Score": self.bst_final.best_score,
+                "Number of Trees": self.bst_final.best_iteration + 1,
+                "10× Base Rate": f"{self.p_hat * 100:.2f}%"
+            }
+
+            # Add baseline probabilities
+            for cluster_id, prob in self.baseline_probs.items():
+                cluster_name = ["Short", "Medium", "Long"][cluster_id]
+                metrics[f"Baseline Prob. ({cluster_name})"] = f"{prob * 100:.2f}%"
+
+            create_stats_table("Model Evaluation", metrics)
 
         return self.bst_final
 
@@ -162,10 +279,34 @@ class CrashStreakAnalyzer:
         if self.bst_final is None:
             raise ValueError("Model not trained. Call train_model() first.")
 
-        return modeling.predict_next_cluster(
+        results = modeling.predict_next_cluster(
             self.bst_final, last_window_multipliers,
             self.WINDOW, self.feature_cols
         )
+
+        # Display prediction results in a table
+        prediction_table = create_table(
+            "Prediction Results", ["Cluster", "Description", "Probability"])
+
+        # Map cluster IDs to descriptions
+        cluster_descriptions = {
+            "0": f"Short Streak (1-5 games)",
+            "1": f"Medium Streak (6-12 games)",
+            "2": f"Long Streak (13+ games)"
+        }
+
+        # Sort by probability (descending)
+        sorted_results = sorted(
+            results.items(), key=lambda x: float(x[1]), reverse=True)
+
+        for cluster, prob in sorted_results:
+            description = cluster_descriptions.get(cluster, "Unknown")
+            add_table_row(prediction_table, [
+                          cluster, description, f"{float(prob) * 100:.2f}%"])
+
+        display_table(prediction_table)
+
+        return results
 
     def daily_update(self, new_rows: pd.DataFrame, drift_threshold: float = 0.005) -> bool:
         """
@@ -178,6 +319,7 @@ class CrashStreakAnalyzer:
         Returns:
             Boolean indicating whether model was retrained
         """
+        print_info("Processing daily update")
         from daily_updates import process_daily_update
         return process_daily_update(self, new_rows, drift_threshold)
 
@@ -185,5 +327,7 @@ class CrashStreakAnalyzer:
         """
         Save a snapshot of the current model and data.
         """
+        print_info("Saving model and data snapshot")
         from daily_updates import save_model_snapshot
         save_model_snapshot(self)
+        print_success("Model snapshot saved successfully")

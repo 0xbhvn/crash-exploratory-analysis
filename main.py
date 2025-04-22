@@ -18,22 +18,17 @@ from typing import Dict, List, Tuple
 from dotenv import load_dotenv
 from pathlib import Path
 
+# Import rich logging
+from logger_config import setup_logging, console, print_info, print_success, print_warning, print_error, print_panel
+
 # Load environment variables from .env file
 load_dotenv()
 
 # Ensure logs directory exists
 Path('logs').mkdir(exist_ok=True)
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('logs/crash_analysis.log')
-    ]
-)
-logger = logging.getLogger(__name__)
+# Setup rich logging
+logger = setup_logging()
 
 # Import local modules
 
@@ -82,9 +77,16 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
 
+    # Display welcome message
+    print_panel(
+        "Crash Game 10× Streak Analysis",
+        title="Welcome",
+        style="green"
+    )
+
     # Handle CSV update if requested
     if args.update_csv:
-        logger.info("Updating CSV data from database...")
+        print_info("Updating CSV data from database...")
         try:
             from fetch_data import fetch_crash_data, fetch_incremental_data
 
@@ -96,23 +98,22 @@ def main():
                 fetch_type = "incremental"
 
             if result:
-                logger.info(
-                    f"✅ {fetch_type.capitalize()} data fetch completed successfully")
+                print_success(
+                    f"{fetch_type.capitalize()} data fetch completed successfully")
             else:
-                logger.error(f"❌ {fetch_type.capitalize()} data fetch failed")
+                print_error(f"{fetch_type.capitalize()} data fetch failed")
                 if not os.path.exists(args.input):
-                    logger.error(
-                        f"Input file {args.input} not found. Exiting.")
+                    print_error(f"Input file {args.input} not found. Exiting.")
                     sys.exit(1)
-                logger.warning("Continuing with existing data...")
+                print_warning("Continuing with existing data...")
 
         except ImportError:
-            logger.error(
+            print_error(
                 "Could not import fetch_data module. Make sure fetch_data.py is in the same directory.")
             if not os.path.exists(args.input):
-                logger.error(f"Input file {args.input} not found. Exiting.")
+                print_error(f"Input file {args.input} not found. Exiting.")
                 sys.exit(1)
-            logger.warning("Continuing with existing data...")
+            print_warning("Continuing with existing data...")
 
     logger.info(f"Starting Crash 10× Streak Analysis with input={args.input}, "
                 f"window={args.window}, test_frac={args.test_frac}")
@@ -131,14 +132,19 @@ def main():
     # Check if this is an update run
     if args.update:
         from daily_updates import load_new_data
+        print_info(f"Running daily update with new data from {args.update}")
         new_data = load_new_data(args.update)
         retrained = analyzer.daily_update(new_data, args.drift_threshold)
         if retrained:
-            logger.info("Model was retrained due to detected drift")
+            print_success("Model was retrained due to detected drift")
             analyzer.save_snapshot()
+        else:
+            print_info("No significant drift detected, model unchanged")
         sys.exit(0)
 
     # Regular analysis pipeline
+    print_info("Running standard analysis pipeline")
+
     # Analyze streaks
     streak_lengths = analyzer.analyze_streaks()
 
@@ -156,9 +162,14 @@ def main():
     demo_input = analyzer.df["Bust"].iloc[-analyzer.WINDOW:].tolist()
     prediction = analyzer.predict_next_cluster(demo_input)
 
-    logger.info(
-        f"Example prediction for next streak length cluster: {prediction}")
-    logger.info("Analysis complete!")
+    # Display prediction
+    print_panel(
+        f"Example prediction for next streak length cluster: {prediction}",
+        title="Prediction Result",
+        style="blue"
+    )
+
+    print_success("Analysis complete!")
 
 
 if __name__ == "__main__":
