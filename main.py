@@ -16,9 +16,13 @@ import argparse
 import logging
 from typing import Dict, List, Tuple
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Ensure logs directory exists
+Path('logs').mkdir(exist_ok=True)
 
 # Setup logging
 logging.basicConfig(
@@ -26,7 +30,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('crash_analysis.log')
+        logging.FileHandler('logs/crash_analysis.log')
     ]
 )
 logger = logging.getLogger(__name__)
