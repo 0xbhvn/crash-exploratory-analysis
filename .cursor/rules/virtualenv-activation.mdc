@@ -1,0 +1,57 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Always Activate Virtual Environment
+
+Always check if the virtual environment is activated before running any terminal commands. The project uses a Python virtual environment located at `crash_env/` to manage dependencies.
+
+## Activation Check
+
+Before executing any terminal commands, check if the virtual environment is active by looking for the `(crash_env)` prefix in the terminal prompt. If it's not active, first activate it using the appropriate command for the user's shell.
+
+## Activation Commands
+
+### For bash/zsh (macOS/Linux):
+```bash
+source crash_env/bin/activate
+```
+
+### For Windows Command Prompt:
+```cmd
+crash_env\Scripts\activate.bat
+```
+
+### For Windows PowerShell:
+```powershell
+.\crash_env\Scripts\Activate.ps1
+```
+
+## Example Usage
+
+Instead of:
+```bash
+python main.py --input games.csv
+```
+
+First check if the environment is activated. If not, use:
+```bash
+source crash_env/bin/activate
+python main.py --input games.csv
+```
+
+## Requirements
+
+The virtual environment contains all the required dependencies:
+- pandas
+- numpy
+- matplotlib
+- xgboost
+- scikit-learn
+- rich
+- python-dotenv
+- sqlalchemy
+- psycopg2-binary
+
+New dependencies should be installed within the virtual environment and added to `requirements.txt`.

@@ -1,0 +1,52 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Analysis Workflow
+
+The project implements a machine learning workflow to predict streak lengths before 10× multipliers in crash games. The key class is `CrashStreakAnalyzer` in [analyzer.py](mdc:analyzer.py).
+
+## CrashStreakAnalyzer Class
+
+The main analyzer class with the following methods:
+
+- `__init__(window, clusters, test_frac, random_seed, output_dir)`: Initialize with configuration parameters
+- `load_data(csv_path)`: Load and clean game data from CSV
+- `analyze_streaks(save_streak_lengths)`: Analyze streak lengths before 10× multipliers
+- `plot_streaks(streak_lengths)`: Generate and save plots of streak distributions
+- `prepare_features()`: Prepare features for machine learning
+- `train_model(eval_folds)`: Train a model to predict streak length clusters
+- `predict_next_cluster(last_window_multipliers)`: Predict the next cluster based on recent multipliers
+- `daily_update(new_rows, drift_threshold)`: Update model with new data if drift is detected
+- `save_snapshot()`: Save a snapshot of the current model and data
+
+## Workflow Steps
+
+1. **Data Loading**: Data is loaded from CSV or fetched from database using [fetch_data.py](mdc:fetch_data.py)
+2. **Streak Analysis**: Streak lengths before 10× multipliers are analyzed in [data_processing.py](mdc:data_processing.py)
+3. **Feature Engineering**: Features are created using rolling windows and lag values
+4. **Model Training**: XGBoost model is trained using [modeling.py](mdc:modeling.py)
+5. **Visualization**: Results are visualized using [visualization.py](mdc:visualization.py)
+6. **Prediction**: New data can be used to predict upcoming streak patterns
+
+## Database Integration
+
+The project can fetch data from a database using SQL queries configured through environment variables:
+
+```
+DATABASE_URL=postgresql://username:password@hostname:port/database
+```
+
+## Command Line Usage
+
+```bash
+# Basic analysis
+python main.py --input games.csv --window 50 --test_frac 0.2 --output_dir ./output
+
+# Fetch new data and analyze
+python main.py --update_csv --input games.csv
+
+# Daily model update with new data
+python main.py --update new_games.csv --drift_threshold 0.005
+```

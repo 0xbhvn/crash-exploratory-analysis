@@ -1,0 +1,61 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Rich Logging Functionality
+
+The project uses the `rich` library for enhanced terminal output with tables, panels, and formatted text. The main functionality is implemented in [logger_config.py](mdc:logger_config.py).
+
+## Key Functions
+
+### Display Functions
+
+- `print_info(message)`: Display info messages in blue
+- `print_success(message)`: Display success messages in green
+- `print_warning(message)`: Display warning messages in yellow
+- `print_error(message)`: Display error messages in red
+- `print_panel(message, title, style)`: Display a message in a styled panel
+
+### Table Functions
+
+- `create_table(title, columns)`: Create a new rich table
+- `add_table_row(table, values)`: Add a row to a table
+- `display_table(table)`: Display the table in the console
+- `create_stats_table(title, stats)`: Create and display a table of statistics from a dictionary
+
+### Progress Tracking
+
+- `start_progress(description, total)`: Start a progress tracking task
+- `update_progress(progress_value)`: Update progress (value between 0.0 and 1.0)
+- `complete_progress(progress)`: Mark progress as complete
+
+## Usage Example
+
+```python
+# Import rich logging
+from logger_config import (
+    console, create_table, display_table, add_table_row, 
+    create_stats_table, print_info, print_success, print_warning, 
+    print_error, print_panel
+)
+
+# Display welcome message
+print_panel(
+    "Crash Game 10× Streak Analysis",
+    title="Welcome",
+    style="green"
+)
+
+# Create and display statistics
+stats = {
+    "Total Rows": 1000,
+    "10× Rate": "8.5%"
+}
+create_stats_table("Data Summary", stats)
+
+# Display success message
+print_success("Analysis complete!")
+```
+
+This rich logging is used throughout the codebase to improve the visualization of data and results.

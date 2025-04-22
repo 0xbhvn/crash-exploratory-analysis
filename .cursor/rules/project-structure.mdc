@@ -1,0 +1,33 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Crash 10× Streak Analysis Project Structure
+
+This project analyzes crash game data to predict streak lengths before 10× multipliers. Here's the key file structure:
+
+## Main Components
+
+- [main.py](mdc:main.py): The entry point for the application, handles command-line arguments and orchestrates the analysis workflow.
+- [analyzer.py](mdc:analyzer.py): Core `CrashStreakAnalyzer` class that coordinates the analysis pipeline.
+- [data_processing.py](mdc:data_processing.py): Handles data loading, cleaning, and feature engineering.
+- [modeling.py](mdc:modeling.py): Implements model training, evaluation, and prediction functionality.
+- [visualization.py](mdc:visualization.py): Creates plots and visualizations of the results.
+- [logger_config.py](mdc:logger_config.py): Rich logging configuration with tables, panels, and formatted output.
+- [fetch_data.py](mdc:fetch_data.py): Database connection to fetch game data.
+- [daily_updates.py](mdc:daily_updates.py): Model update functionality for new data, including drift detection.
+
+## Data Flow
+
+1. Data is loaded from CSV or fetched from database
+2. Streak lengths before 10× multipliers are analyzed
+3. Features are prepared for machine learning
+4. Model is trained to predict streak length clusters
+5. Visualizations and statistics are generated
+6. Results are displayed using rich formatting
+
+## Directory Structure
+
+- `/output`: Contains saved model files, plots, and statistics
+- `/logs`: Contains log files from application runs
