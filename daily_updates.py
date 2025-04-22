@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Daily updates module for Crash Game 10× Streak Analysis.
+Daily updates module for Crash Game Streak Analysis.
 
 This module handles updating the model with new data and detecting distribution drift.
 """
@@ -29,7 +29,7 @@ def process_daily_update(analyzer, new_rows: pd.DataFrame, drift_threshold: floa
     Args:
         analyzer: CrashStreakAnalyzer instance
         new_rows: DataFrame with new game data
-        drift_threshold: Threshold for detecting drift in 10× rate
+        drift_threshold: Threshold for detecting drift in multiplier rate
 
     Returns:
         Boolean indicating whether model was retrained
@@ -39,16 +39,19 @@ def process_daily_update(analyzer, new_rows: pd.DataFrame, drift_threshold: floa
     # Update dataframe
     analyzer.df = pd.concat([analyzer.df, new_rows]).reset_index(drop=True)
 
-    # Recompute empirical 10× rate
-    p_today = (new_rows['Bust'] >= 10).mean()
+    # Get the multiplier threshold from the analyzer
+    multiplier_threshold = analyzer.MULTIPLIER_THRESHOLD
+
+    # Recompute empirical rate for the multiplier threshold
+    p_today = (new_rows['Bust'] >= multiplier_threshold).mean()
 
     # Display drift statistics
     drift_stats = {
         "New Rows": len(new_rows),
         "First Game ID": new_rows["Game ID"].min() if not new_rows.empty else "N/A",
         "Last Game ID": new_rows["Game ID"].max() if not new_rows.empty else "N/A",
-        "Current 10× Rate": f"{p_today:.4f}",
-        "Historical 10× Rate": f"{analyzer.p_hat:.4f}",
+        f"Current {multiplier_threshold}× Rate": f"{p_today:.4f}",
+        f"Historical {multiplier_threshold}× Rate": f"{analyzer.p_hat:.4f}",
         "Absolute Difference": f"{abs(p_today - analyzer.p_hat):.4f}",
         "Drift Threshold": f"{drift_threshold:.4f}"
     }
@@ -56,7 +59,7 @@ def process_daily_update(analyzer, new_rows: pd.DataFrame, drift_threshold: floa
 
     if abs(p_today - analyzer.p_hat) > drift_threshold:
         print_warning(
-            f"Drift detected: today's 10× rate {p_today:.4f} vs. historical {analyzer.p_hat:.4f}")
+            f"Drift detected: today's {multiplier_threshold}× rate {p_today:.4f} vs. historical {analyzer.p_hat:.4f}")
         print_info("Retraining model...")
 
         # Re-prepare features and retrain
@@ -64,8 +67,11 @@ def process_daily_update(analyzer, new_rows: pd.DataFrame, drift_threshold: floa
         analyzer.train_model()
 
         # Update p_hat
-        analyzer.p_hat = (analyzer.df['Bust'] >= 10).mean()
-        print_success(f"Updated model with new 10× rate: {analyzer.p_hat:.4f}")
+        hit_col = f"is_hit{int(multiplier_threshold) if multiplier_threshold.is_integer() else multiplier_threshold}"
+        analyzer.p_hat = analyzer.df[hit_col].mean() if hit_col in analyzer.df.columns else (
+            analyzer.df['Bust'] >= multiplier_threshold).mean()
+        print_success(
+            f"Updated model with new {multiplier_threshold}× rate: {analyzer.p_hat:.4f}")
         return True
     else:
         print_info(
@@ -105,6 +111,7 @@ def save_model_snapshot(analyzer, output_dir: str = None) -> None:
     metadata = {
         "timestamp": timestamp,
         "p_hat": analyzer.p_hat,
+        "multiplier_threshold": analyzer.MULTIPLIER_THRESHOLD,
         "window": analyzer.WINDOW,
         "clusters": {str(k): v for k, v in analyzer.CLUSTERS.items()},
         "test_frac": analyzer.TEST_FRAC,
@@ -123,7 +130,7 @@ def save_model_snapshot(analyzer, output_dir: str = None) -> None:
         "Data Path": data_path,
         "Metadata Path": meta_path,
         "Total Rows": len(analyzer.df),
-        "10× Rate": f"{analyzer.p_hat:.4f}",
+        f"{analyzer.MULTIPLIER_THRESHOLD}× Rate": f"{analyzer.p_hat:.4f}",
         "Snapshot Directory": snapshot_dir
     }
     create_stats_table("Model Snapshot Summary", snapshot_info)
@@ -131,12 +138,13 @@ def save_model_snapshot(analyzer, output_dir: str = None) -> None:
     print_success(f"Saved model snapshot to {snapshot_dir}")
 
 
-def load_new_data(data_path: str) -> pd.DataFrame:
+def load_new_data(data_path: str, multiplier_threshold: float = 10.0) -> pd.DataFrame:
     """
     Load new data for daily update.
 
     Args:
         data_path: Path to CSV file with new game data
+        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
 
     Returns:
         DataFrame with new game data
@@ -171,8 +179,8 @@ def load_new_data(data_path: str) -> pd.DataFrame:
             "Min Multiplier": df_new["Bust"].min() if not df_new.empty else "N/A",
             "Max Multiplier": df_new["Bust"].max() if not df_new.empty else "N/A",
             "Avg Multiplier": round(df_new["Bust"].mean(), 2) if not df_new.empty else "N/A",
-            "10× or Higher": (df_new["Bust"] >= 10).sum() if not df_new.empty else "N/A",
-            "10× Rate": f"{(df_new['Bust'] >= 10).mean() * 100:.2f}%" if not df_new.empty else "N/A"
+            f"{multiplier_threshold}× or Higher": (df_new["Bust"] >= multiplier_threshold).sum() if not df_new.empty else "N/A",
+            f"{multiplier_threshold}× Rate": f"{(df_new['Bust'] >= multiplier_threshold).mean() * 100:.2f}%" if not df_new.empty else "N/A"
         }
         create_stats_table("New Data Summary", new_data_stats)
 

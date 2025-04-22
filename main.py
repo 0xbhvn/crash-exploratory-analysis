@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Main entry point for Crash Game 10× Streak Analysis.
+Main entry point for Crash Game Streak Analysis.
 
 This script provides the command-line interface and coordinates the analysis.
 
 Usage:
-    python main.py --input games.csv [--window 50] [--test_frac 0.2] [--output_dir ./output]
+    python main.py --input games.csv [--multiplier_threshold 10.0] [--window 50] [--test_frac 0.2] [--output_dir ./output]
 """
 
 from analyzer import CrashStreakAnalyzer
@@ -41,9 +41,11 @@ def parse_arguments():
         Parsed arguments
     """
     parser = argparse.ArgumentParser(
-        description='Crash Game 10× Streak Analysis')
+        description='Crash Game Streak Analysis')
     parser.add_argument('--input', default='games.csv',
                         help='Path to input CSV file with Game ID and Bust columns')
+    parser.add_argument('--multiplier_threshold', type=float, default=10.0,
+                        help='Threshold for considering a multiplier as a hit (default: 10.0)')
     parser.add_argument('--window', type=int, default=50,
                         help='Rolling window size for feature engineering')
     parser.add_argument('--test_frac', type=float, default=0.2,
@@ -79,7 +81,7 @@ def main():
 
     # Display welcome message
     print_panel(
-        "Crash Game 10× Streak Analysis",
+        f"Crash Game {args.multiplier_threshold}× Streak Analysis",
         title="Welcome",
         style="green"
     )
@@ -91,10 +93,12 @@ def main():
             from fetch_data import fetch_crash_data, fetch_incremental_data
 
             if args.full_fetch:
-                result = fetch_crash_data(args.input, args.fetch_limit)
+                result = fetch_crash_data(
+                    args.input, args.fetch_limit, args.multiplier_threshold)
                 fetch_type = "full"
             else:
-                result = fetch_incremental_data(args.input)
+                result = fetch_incremental_data(
+                    args.input, multiplier_threshold=args.multiplier_threshold)
                 fetch_type = "incremental"
 
             if result:
@@ -115,11 +119,12 @@ def main():
                 sys.exit(1)
             print_warning("Continuing with existing data...")
 
-    logger.info(f"Starting Crash 10× Streak Analysis with input={args.input}, "
+    logger.info(f"Starting Crash {args.multiplier_threshold}× Streak Analysis with input={args.input}, "
                 f"window={args.window}, test_frac={args.test_frac}")
 
     # Initialize analyzer
     analyzer = CrashStreakAnalyzer(
+        multiplier_threshold=args.multiplier_threshold,
         window=args.window,
         test_frac=args.test_frac,
         random_seed=args.random_seed,
@@ -133,7 +138,7 @@ def main():
     if args.update:
         from daily_updates import load_new_data
         print_info(f"Running daily update with new data from {args.update}")
-        new_data = load_new_data(args.update)
+        new_data = load_new_data(args.update, args.multiplier_threshold)
         retrained = analyzer.daily_update(new_data, args.drift_threshold)
         if retrained:
             print_success("Model was retrained due to detected drift")

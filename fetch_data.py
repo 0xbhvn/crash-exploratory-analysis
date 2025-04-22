@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Data fetching module for Crash Game 10× Streak Analysis.
+Data fetching module for Crash Game Streak Analysis.
 
 This script connects to the database and downloads game data to a CSV file.
 Only the game_id and crash_point columns are extracted.
@@ -38,13 +38,14 @@ def setup_logging():
     return setup_logging(log_file='logs/data_fetch.log')
 
 
-def fetch_crash_data(output_file: str = 'games.csv', limit: Optional[int] = None) -> bool:
+def fetch_crash_data(output_file: str = 'games.csv', limit: Optional[int] = None, multiplier_threshold: float = 10.0) -> bool:
     """
     Fetch crash game data from the database and save to CSV.
 
     Args:
         output_file: Path to save the CSV file
         limit: Optional limit on number of rows to fetch
+        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
 
     Returns:
         Boolean indicating success
@@ -86,8 +87,8 @@ def fetch_crash_data(output_file: str = 'games.csv', limit: Optional[int] = None
             "Min Multiplier": df["Bust"].min() if not df.empty else "N/A",
             "Max Multiplier": df["Bust"].max() if not df.empty else "N/A",
             "Avg Multiplier": df["Bust"].mean() if not df.empty else "N/A",
-            "10× or Higher": (df["Bust"] >= 10).sum() if not df.empty else "N/A",
-            "10× Rate": f"{(df['Bust'] >= 10).mean() * 100:.2f}%" if not df.empty else "N/A",
+            f"{multiplier_threshold}× or Higher": (df["Bust"] >= multiplier_threshold).sum() if not df.empty else "N/A",
+            f"{multiplier_threshold}× Rate": f"{(df['Bust'] >= multiplier_threshold).mean() * 100:.2f}%" if not df.empty else "N/A",
             "Query Time": f"{execution_time:.2f} seconds"
         }
 
@@ -114,13 +115,15 @@ def fetch_crash_data(output_file: str = 'games.csv', limit: Optional[int] = None
 
 
 def fetch_incremental_data(output_file: str = 'games.csv',
-                           last_game_id: Optional[int] = None) -> bool:
+                           last_game_id: Optional[int] = None,
+                           multiplier_threshold: float = 10.0) -> bool:
     """
     Fetch only new crash game data since the last known game_id.
 
     Args:
         output_file: Path to save or update the CSV file
         last_game_id: The highest game_id already in the dataset
+        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
 
     Returns:
         Boolean indicating success
@@ -176,8 +179,8 @@ def fetch_incremental_data(output_file: str = 'games.csv',
             "Min Multiplier": new_df["Bust"].min() if not new_df.empty else "N/A",
             "Max Multiplier": new_df["Bust"].max() if not new_df.empty else "N/A",
             "Avg Multiplier": new_df["Bust"].mean() if not new_df.empty else "N/A",
-            "10× or Higher": (new_df["Bust"] >= 10).sum() if not new_df.empty else "N/A",
-            "10× Rate": f"{(new_df['Bust'] >= 10).mean() * 100:.2f}%" if not new_df.empty else "N/A",
+            f"{multiplier_threshold}× or Higher": (new_df["Bust"] >= multiplier_threshold).sum() if not new_df.empty else "N/A",
+            f"{multiplier_threshold}× Rate": f"{(new_df['Bust'] >= multiplier_threshold).mean() * 100:.2f}%" if not new_df.empty else "N/A",
             "Query Time": f"{execution_time:.2f} seconds"
         }
 
@@ -229,12 +232,16 @@ if __name__ == '__main__':
                         help='Limit number of rows to fetch')
     parser.add_argument('--incremental', action='store_true',
                         help='Fetch only new data since last known game_id')
+    parser.add_argument('--multiplier_threshold', type=float, default=10.0,
+                        help='Threshold for considering a multiplier as a hit (default: 10.0)')
     args = parser.parse_args()
 
     if args.incremental:
-        result = fetch_incremental_data(args.output)
+        result = fetch_incremental_data(
+            args.output, multiplier_threshold=args.multiplier_threshold)
     else:
-        result = fetch_crash_data(args.output, args.limit)
+        result = fetch_crash_data(
+            args.output, args.limit, args.multiplier_threshold)
 
     if result:
         print_success("Data fetch successful")

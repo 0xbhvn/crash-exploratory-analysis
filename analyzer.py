@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Analyzer class for Crash Game 10× Streak Analysis.
+Analyzer class for Crash Game Streak Analysis.
 
 This module contains the main CrashStreakAnalyzer class that coordinates the analysis.
 """
@@ -30,14 +30,15 @@ logger = logging.getLogger(__name__)
 
 class CrashStreakAnalyzer:
     """
-    Analyzes crash game data to predict streak lengths including 10× multipliers.
+    Analyzes crash game data to predict streak lengths including configurable multipliers.
 
     This class handles data loading, cleaning, feature engineering, model training,
     and prediction of streak length categories. Streak lengths include all games
-    up to and including the 10× multiplier.
+    up to and including the specified multiplier threshold.
     """
 
     def __init__(self,
+                 multiplier_threshold: float = 10.0,
                  window: int = 50,
                  clusters: Dict[int, Tuple[int, int]] = None,
                  test_frac: float = 0.2,
@@ -47,12 +48,14 @@ class CrashStreakAnalyzer:
         Initialize the analyzer with configuration parameters.
 
         Args:
+            multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
             window: Rolling window size for feature engineering
             clusters: Dictionary mapping cluster IDs to (min, max) streak length ranges
             test_frac: Fraction of data to use for testing
             random_seed: Random seed for reproducibility
             output_dir: Directory to save outputs
         """
+        self.MULTIPLIER_THRESHOLD = multiplier_threshold
         self.WINDOW = window
         self.CLUSTERS = clusters or {0: (1, 5), 1: (6, 12), 2: (13, 9999)}
         self.TEST_FRAC = test_frac
@@ -73,6 +76,7 @@ class CrashStreakAnalyzer:
 
         # Display initialization info in a panel
         config_info = (
+            f"Multiplier Threshold: {multiplier_threshold}×\n"
             f"Window Size: {window}\n"
             f"Test Fraction: {test_frac}\n"
             f"Random Seed: {random_seed}\n"
@@ -110,8 +114,8 @@ class CrashStreakAnalyzer:
             "Min Multiplier": self.df["Bust"].min() if not self.df.empty else "N/A",
             "Max Multiplier": self.df["Bust"].max() if not self.df.empty else "N/A",
             "Avg Multiplier": round(self.df["Bust"].mean(), 2) if not self.df.empty else "N/A",
-            "10× or Higher": (self.df["Bust"] >= 10).sum() if not self.df.empty else "N/A",
-            "10× Rate": f"{(self.df['Bust'] >= 10).mean() * 100:.2f}%" if not self.df.empty else "N/A"
+            f"{self.MULTIPLIER_THRESHOLD}× or Higher": (self.df["Bust"] >= self.MULTIPLIER_THRESHOLD).sum() if not self.df.empty else "N/A",
+            f"{self.MULTIPLIER_THRESHOLD}× Rate": f"{(self.df['Bust'] >= self.MULTIPLIER_THRESHOLD).mean() * 100:.2f}%" if not self.df.empty else "N/A"
         }
         create_stats_table("Data Summary", summary_stats)
 
@@ -119,16 +123,18 @@ class CrashStreakAnalyzer:
 
     def analyze_streaks(self, save_streak_lengths: bool = True) -> List[int]:
         """
-        Analyze streak lengths including 10× multipliers.
+        Analyze streak lengths including multipliers at or above the threshold.
 
         Args:
             save_streak_lengths: Whether to save streak lengths to CSV
 
         Returns:
-            List of streak lengths (including the game with ≥10× multiplier)
+            List of streak lengths (including the game with ≥threshold multiplier)
         """
-        print_info("Analyzing streak lengths including 10× multipliers")
-        streak_lengths = data_processing.analyze_streaks(self.df)
+        print_info(
+            f"Analyzing streak lengths including {self.MULTIPLIER_THRESHOLD}× multipliers")
+        streak_lengths = data_processing.analyze_streaks(
+            self.df, self.MULTIPLIER_THRESHOLD)
 
         # Calculate percentiles
         percentiles = data_processing.calculate_streak_percentiles(
@@ -178,7 +184,7 @@ class CrashStreakAnalyzer:
         percentiles = data_processing.calculate_streak_percentiles(
             streak_lengths)
         visualization.plot_streaks(
-            streak_lengths, percentiles, self.output_dir)
+            streak_lengths, percentiles, self.output_dir, self.MULTIPLIER_THRESHOLD)
         print_success("Saved streak distribution plots to output directory")
 
     def prepare_features(self) -> pd.DataFrame:
@@ -190,7 +196,7 @@ class CrashStreakAnalyzer:
         """
         print_info("Preparing features for machine learning")
         self.df, self.feature_cols = data_processing.prepare_features(
-            self.df, self.WINDOW, self.CLUSTERS)
+            self.df, self.WINDOW, self.CLUSTERS, self.MULTIPLIER_THRESHOLD)
 
         # Display feature information
         feature_info = {
@@ -241,7 +247,7 @@ class CrashStreakAnalyzer:
         self.bst_final, self.baseline_probs, self.p_hat = modeling.train_model(
             self.df, self.feature_cols, self.CLUSTERS,
             self.TEST_FRAC, self.RANDOM_SEED, eval_folds,
-            self.output_dir
+            self.output_dir, self.MULTIPLIER_THRESHOLD
         )
 
         # Generate feature importance plot
@@ -255,7 +261,7 @@ class CrashStreakAnalyzer:
             metrics = {
                 "Best Validation Score": self.bst_final.best_score,
                 "Number of Trees": self.bst_final.best_iteration + 1,
-                "10× Base Rate": f"{self.p_hat * 100:.2f}%"
+                f"{self.MULTIPLIER_THRESHOLD}× Base Rate": f"{self.p_hat * 100:.2f}%"
             }
 
             # Add baseline probabilities
@@ -275,25 +281,25 @@ class CrashStreakAnalyzer:
             last_window_multipliers: List of last WINDOW multipliers
 
         Returns:
-            Dictionary of cluster probabilities for streak lengths (including the 10× game itself)
+            Dictionary of cluster probabilities for streak lengths (including the hit game itself)
         """
         if self.bst_final is None:
             raise ValueError("Model not trained. Call train_model() first.")
 
         results = modeling.predict_next_cluster(
             self.bst_final, last_window_multipliers,
-            self.WINDOW, self.feature_cols
+            self.WINDOW, self.feature_cols, self.MULTIPLIER_THRESHOLD
         )
 
         # Display prediction results in a table
         prediction_table = create_table(
             "Prediction Results", ["Cluster", "Description", "Probability"])
 
-        # Map cluster IDs to descriptions (updated to include the 10× game in the streak)
+        # Map cluster IDs to descriptions (updated to include the hit game in the streak)
         cluster_descriptions = {
-            "0": f"Short Streak (1-5 games, including the 10× hit)",
-            "1": f"Medium Streak (6-12 games, including the 10× hit)",
-            "2": f"Long Streak (13+ games, including the 10× hit)"
+            "0": f"Short Streak (1-5 games, including the {self.MULTIPLIER_THRESHOLD}× hit)",
+            "1": f"Medium Streak (6-12 games, including the {self.MULTIPLIER_THRESHOLD}× hit)",
+            "2": f"Long Streak (13+ games, including the {self.MULTIPLIER_THRESHOLD}× hit)"
         }
 
         # Sort by probability (descending)
@@ -315,7 +321,7 @@ class CrashStreakAnalyzer:
 
         Args:
             new_rows: DataFrame with new game data
-            drift_threshold: Threshold for detecting drift in 10× rate
+            drift_threshold: Threshold for detecting drift in multiplier rate
 
         Returns:
             Boolean indicating whether model was retrained

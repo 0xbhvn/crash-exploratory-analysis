@@ -56,35 +56,37 @@ def load_data(csv_path: str) -> pd.DataFrame:
     return df
 
 
-def analyze_streaks(df: pd.DataFrame) -> List[int]:
+def analyze_streaks(df: pd.DataFrame, multiplier_threshold: float = 10.0) -> List[int]:
     """
-    Analyze streak lengths including 10× multipliers.
+    Analyze streak lengths including multipliers at or above the threshold.
 
     Args:
         df: DataFrame with game data
+        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
 
     Returns:
-        List of streak lengths (including the game with ≥10× multiplier)
+        List of streak lengths (including the game with ≥threshold multiplier)
     """
-    logger.info("Analyzing streak lengths including 10× multipliers")
+    logger.info(
+        f"Analyzing streak lengths including {multiplier_threshold}× multipliers")
 
     streak_lengths = []
     current_streak_length = 0
 
     for bust in df["Bust"]:
-        # Increment streak for all games (including ≥10×)
+        # Increment streak for all games (including ≥threshold)
         current_streak_length += 1
 
-        if bust >= 10:
-            # We hit ≥10× ⇒ record the streak length (including this game)
+        if bust >= multiplier_threshold:
+            # We hit ≥threshold ⇒ record the streak length (including this game)
             streak_lengths.append(current_streak_length)
             current_streak_length = 0  # reset
 
-    # If the dataset ends without a 10×, we drop the trailing incomplete streak
+    # If the dataset ends without a threshold hit, we drop the trailing incomplete streak
 
     # Display streak statistics
     streaks_stats = {
-        "Total 10× Hits": len(streak_lengths),
+        f"Total {multiplier_threshold}× Hits": len(streak_lengths),
         "Min Streak Length": min(streak_lengths) if streak_lengths else "N/A",
         "Max Streak Length": max(streak_lengths) if streak_lengths else "N/A",
         "Avg Streak Length": f"{np.mean(streak_lengths):.2f}" if streak_lengths else "N/A"
@@ -141,11 +143,11 @@ def add_rolling_features(frame: pd.DataFrame, window: int) -> pd.DataFrame:
     return frame
 
 
-def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[int, int]]) -> Tuple[pd.DataFrame, List[str]]:
+def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[int, int]], multiplier_threshold: float = 10.0) -> Tuple[pd.DataFrame, List[str]]:
     """
     Prepare features for machine learning, including:
-    - Mark 10× hits
-    - Calculate distance to next 10× hit (including the 10× hit)
+    - Mark multiplier threshold hits
+    - Calculate distance to next threshold hit (including the hit)
     - Create cluster labels
     - Generate rolling window features
 
@@ -153,6 +155,7 @@ def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[in
         df: DataFrame with game data
         window: Rolling window size for feature engineering
         clusters: Dictionary mapping cluster IDs to (min, max) streak length ranges
+        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
 
     Returns:
         Tuple of (DataFrame with features and target, list of feature column names)
@@ -162,33 +165,35 @@ def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[in
     # Sort by Game ID to ensure chronological order
     df = df.sort_values("Game ID").reset_index(drop=True)
 
-    # Mark 10× hits
-    df["is_hit10"] = (df["Bust"] >= 10).astype(int)
+    # Mark threshold hits
+    hit_col = f"is_hit{int(multiplier_threshold) if multiplier_threshold.is_integer() else multiplier_threshold}"
+    df[hit_col] = (df["Bust"] >= multiplier_threshold).astype(int)
     print_info(
-        f"Marked {df['is_hit10'].sum()} 10× hits out of {len(df)} games")
+        f"Marked {df[hit_col].sum()} {multiplier_threshold}× hits out of {len(df)} games")
 
-    # Distance to next 10× (including the 10× game itself)
+    # Distance to next threshold hit (including the hit game itself)
     n = len(df)
     gap = np.empty(n, dtype=int)
     dist = n  # start with a large but finite number
 
     for i in range(n - 1, -1, -1):
         dist += 1  # increment distance for all games
-        if df.at[i, "is_hit10"]:
-            gap[i] = 0  # this game is a 10× hit
+        if df.at[i, hit_col]:
+            gap[i] = 0  # this game is a threshold hit
             dist = 0  # reset counter from this game
         else:
-            gap[i] = dist  # distance to next 10×
+            gap[i] = dist  # distance to next threshold hit
 
-    df["gap_next_10x"] = gap
-    print_info("Calculated distance to next 10× for each game")
+    df["gap_next_hit"] = gap
+    print_info(
+        f"Calculated distance to next {multiplier_threshold}× for each game")
 
     # Map gap to cluster
     def gap_to_cluster(g):
-        # Include the game with the 10× in the streak length
-        streak_length = g + 1  # +1 to include the 10× game
+        # Include the game with the threshold hit in the streak length
+        streak_length = g + 1  # +1 to include the hit game
 
-        # If this is a 10× game itself, set streak_length to 1
+        # If this is a threshold hit game itself, set streak_length to 1
         if g == 0:
             streak_length = 1
 
@@ -197,7 +202,7 @@ def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[in
                 return c
         return np.nan  # anything >9999 → NaN
 
-    df["target_cluster"] = df["gap_next_10x"].map(gap_to_cluster)
+    df["target_cluster"] = df["gap_next_hit"].map(gap_to_cluster)
     df = df.dropna(subset=["target_cluster"]).reset_index(drop=True)
     df["target_cluster"] = df["target_cluster"].astype(int)
 
@@ -226,7 +231,7 @@ def prepare_features(df: pd.DataFrame, window: int, clusters: Dict[int, Tuple[in
 
     # Identify feature columns
     feature_cols = [c for c in df.columns if c not in
-                    ("Game ID", "is_hit10", "gap_next_10x", "target_cluster")]
+                    ("Game ID", hit_col, "gap_next_hit", "target_cluster")]
 
     feature_stats = {
         "Total Features": len(feature_cols),

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Logger configuration for Crash Game 10× Streak Analysis.
+Logger configuration for Crash Game Streak Analysis.
 
 This module sets up rich logging with progress bars for the application.
 """

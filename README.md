@@ -1,10 +1,10 @@
-# Crash Game 10× Streak Analysis
+# Crash Game Streak Analysis
 
-A tool for analyzing and predicting streak lengths before 10× multipliers in "crash"-style gambling games.
+A tool for analyzing and predicting streak lengths before configurable multipliers in "crash"-style gambling games.
 
 ## Overview
 
-This project analyzes game data from "crash"-style gambling games, focusing on streaks before 10× multipliers. It builds a machine learning model to predict the length category of streaks before the next 10× multiplier occurs.
+This project analyzes game data from "crash"-style gambling games, focusing on streaks before a configurable multiplier threshold (default: 10×). It builds a machine learning model to predict the length category of streaks before the next multiplier at or above the threshold occurs.
 
 ## Project Structure
 
@@ -75,6 +75,9 @@ python main.py --update_csv --save_plots
 
 # Run analysis with existing data file
 python main.py --input games.csv --output_dir ./results --save_plots
+
+# Run analysis with a different multiplier threshold (e.g. 2×)
+python main.py --input games.csv --multiplier_threshold 2.0 --save_plots
 ```
 
 This will:
@@ -105,6 +108,7 @@ This will:
 ## Command Line Arguments
 
 - `--input`: Path to input CSV file with Game ID and Bust columns (default: games.csv)
+- `--multiplier_threshold`: Threshold for considering a multiplier as a hit (default: 10.0)
 - `--window`: Rolling window size for feature engineering (default: 50)
 - `--test_frac`: Fraction of data to use for testing (default: 0.2)
 - `--output_dir`: Directory to save outputs (default: ./output)
@@ -120,7 +124,7 @@ This will:
 
 The analysis generates several outputs in the specified output directory:
 
-- `streak_lengths.csv`: Raw streak lengths before 10× multipliers
+- `streak_lengths.csv`: Raw streak lengths before threshold multipliers
 - `streak_histogram.png`: Histogram of streak lengths
 - `streak_percentiles.png`: Histogram with percentile markers
 - `feature_importance.png`: Feature importance plot from the trained model

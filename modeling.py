@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Modeling module for Crash Game 10× Streak Analysis.
+Modeling module for Crash Game Streak Analysis.
 
 This module handles model training, evaluation, and prediction.
 """
@@ -15,6 +15,7 @@ import joblib
 from sklearn.metrics import log_loss, confusion_matrix, classification_report
 from sklearn.calibration import calibration_curve
 from typing import Dict, List, Tuple, Optional, Any
+import importlib
 
 # Import rich logging
 from logger_config import (
@@ -28,9 +29,9 @@ logger = logging.getLogger(__name__)
 
 def train_model(df: pd.DataFrame, feature_cols: List[str], clusters: Dict[int, Tuple[int, int]],
                 test_frac: float, random_seed: int, eval_folds: int = 5,
-                output_dir: str = './output') -> Tuple[xgb.Booster, Dict[str, float], float]:
+                output_dir: str = './output', multiplier_threshold: float = 10.0) -> Tuple[xgb.Booster, Dict[str, float], float]:
     """
-    Train a model to predict streak length clusters.
+    Train an XGBoost model for streak length prediction.
 
     Args:
         df: DataFrame with features and target
@@ -38,13 +39,14 @@ def train_model(df: pd.DataFrame, feature_cols: List[str], clusters: Dict[int, T
         clusters: Dictionary mapping cluster IDs to (min, max) streak length ranges
         test_frac: Fraction of data to use for testing
         random_seed: Random seed for reproducibility
-        eval_folds: Number of folds for rolling-origin cross-validation
-        output_dir: Directory to save outputs
+        eval_folds: Number of folds for cross-validation
+        output_dir: Directory to save model and outputs
+        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
 
     Returns:
-        Tuple of (trained XGBoost model, baseline probabilities, p_hat value)
+        Tuple of (trained model, baseline probabilities, empirical hit rate)
     """
-    print_info("Training model to predict streak length clusters")
+    logger.info("Training XGBoost model for streak length prediction")
 
     # Train/test split
     split_idx = int(len(df) * (1 - test_frac))
@@ -63,12 +65,19 @@ def train_model(df: pd.DataFrame, feature_cols: List[str], clusters: Dict[int, T
     X_train, y_train = train_df[feature_cols], train_df["target_cluster"]
     X_test, y_test = test_df[feature_cols], test_df["target_cluster"]
 
-    # Baseline geometric
-    p_hat = (df["Bust"] >= 10).mean()
-    baseline_probs = {
-        c: (1 - p_hat)**(lo-1) - (1 - p_hat)**hi
-        for c, (lo, hi) in clusters.items()
-    }
+    # Calculate baseline probabilities
+    unique_classes = sorted(y_train.unique())
+    baseline_probs = {}
+    for c in unique_classes:
+        baseline_probs[c] = (y_train == c).mean()
+
+    print_info(
+        f"Baseline probabilities: {', '.join([f'Class {k}: {v:.3f}' for k, v in baseline_probs.items()])}")
+
+    # Calculate empirical hit rate
+    p_hat = df["is_hit{}".format(int(multiplier_threshold) if multiplier_threshold.is_integer(
+    ) else multiplier_threshold)].mean()
+    print_info(f"Empirical {multiplier_threshold}× hit rate: {p_hat:.4f}")
 
     # Display baseline probabilities
     baseline_table = create_table("Baseline Probabilities", [
@@ -328,7 +337,7 @@ def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir) -
 
 
 def predict_next_cluster(model, last_window_multipliers: List[float], window: int,
-                         feature_cols: List[str]) -> Dict[str, float]:
+                         feature_cols: List[str], multiplier_threshold: float = 10.0) -> Dict[str, float]:
     """
     Predict the next cluster based on recent multipliers.
 
@@ -337,6 +346,7 @@ def predict_next_cluster(model, last_window_multipliers: List[float], window: in
         last_window_multipliers: List of last WINDOW multipliers
         window: Rolling window size
         feature_cols: List of feature column names
+        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
 
     Returns:
         Dictionary of cluster probabilities
@@ -366,8 +376,8 @@ def predict_next_cluster(model, last_window_multipliers: List[float], window: in
         "Mean Multiplier": f"{np.mean(last_window_multipliers):.2f}",
         "Min Multiplier": f"{np.min(last_window_multipliers):.2f}",
         "Max Multiplier": f"{np.max(last_window_multipliers):.2f}",
-        "10× Count": sum(1 for x in last_window_multipliers if x >= 10),
-        "10× Rate": f"{sum(1 for x in last_window_multipliers if x >= 10) / len(last_window_multipliers) * 100:.2f}%"
+        f"{multiplier_threshold}× Count": sum(1 for x in last_window_multipliers if x >= multiplier_threshold),
+        f"{multiplier_threshold}× Rate": f"{sum(1 for x in last_window_multipliers if x >= multiplier_threshold) / len(last_window_multipliers) * 100:.2f}%"
     }
     create_stats_table("Input Multiplier Summary", input_stats)
 

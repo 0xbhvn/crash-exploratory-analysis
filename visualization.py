@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Visualization module for Crash Game 10× Streak Analysis.
+Visualization module for Crash Game Streak Analysis.
 
 This module handles plotting and visualization of data.
 """
@@ -21,25 +21,36 @@ from logger_config import (
 logger = logging.getLogger(__name__)
 
 
-def plot_streaks(df, output_dir: str) -> None:
+def plot_streaks(streak_lengths, percentiles: Dict[str, float], output_dir: str, multiplier_threshold: float = 10.0) -> None:
     """
     Plot the distribution of streak lengths.
 
     A streak is defined as a sequence of consecutive games that includes a game with a 
-    multiplier of 10x or greater. The streak length includes the high multiplier game itself.
+    multiplier at or above the threshold. The streak length includes the high multiplier game itself.
 
     Args:
-        df: Dataframe containing streak data
+        streak_lengths: List of streak lengths or DataFrame with streak_length column
+        percentiles: Dictionary of percentile values
         output_dir: Directory to save plots
+        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
     """
     print_info("Generating streak length distribution plots")
+
+    # Convert to DataFrame if it's a list
+    if isinstance(streak_lengths, list):
+        import pandas as pd
+        df = pd.DataFrame({'streak_length': streak_lengths})
+    else:
+        df = streak_lengths
 
     # Basic histogram
     plt.figure(figsize=(10, 6))
     bins = range(1, max(df['streak_length']) + 2)
     plt.hist(df['streak_length'], bins=bins, edgecolor="black", alpha=0.8)
-    plt.title("Distribution of streak lengths INCLUDING a ≥10× multiplier")
-    plt.xlabel("Streak length (# consecutive games including the ≥10× game)")
+    plt.title(
+        f"Distribution of streak lengths INCLUDING a ≥{multiplier_threshold}× multiplier")
+    plt.xlabel(
+        f"Streak length (# consecutive games including the ≥{multiplier_threshold}× game)")
     plt.ylabel("Frequency")
     plt_file = os.path.join(output_dir, "streak_histogram.png")
     plt.savefig(plt_file)
@@ -124,7 +135,7 @@ def plot_feature_importance(model, feature_cols: List[str], output_dir: str) -> 
     print_success("Feature importance visualization complete")
 
 
-def plot_calibration_curve(y_test, probs_test, output_dir: str) -> None:
+def plot_calibration_curve(y_test, probs_test, output_dir: str, multiplier_threshold: float = 10.0) -> None:
     """
     Plot calibration curve for model evaluation.
 
@@ -132,6 +143,7 @@ def plot_calibration_curve(y_test, probs_test, output_dir: str) -> None:
         y_test: Test labels
         probs_test: Predicted probabilities
         output_dir: Directory to save plots
+        multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
     """
     print_info("Generating calibration curve")
 
@@ -166,7 +178,7 @@ def plot_calibration_curve(y_test, probs_test, output_dir: str) -> None:
     plt.xlabel('Mean predicted probability')
     plt.ylabel('Fraction of positives')
     plt.title(
-        'Calibration Curve (Short streak class - game count including ≥10× multiplier)')
+        f'Calibration Curve (Short streak class - game count including ≥{multiplier_threshold}× multiplier)')
     plt.legend(loc='lower right')
     plt.tight_layout()
     plt_file = os.path.join(output_dir, "calibration_curve.png")
