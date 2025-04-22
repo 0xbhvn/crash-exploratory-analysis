@@ -229,22 +229,29 @@ def create_stats_table(title: str, stats: Dict[str, Any]) -> None:
 
 def print_info(message: str):
     """Print an info message with styling."""
-    console.print(f"[bold blue]INFO:[/] {message}")
+    # Use the logging system for consistency
+    logging.info(message)
 
 
 def print_success(message: str):
     """Print a success message with styling."""
-    console.print(f"[bold green]SUCCESS:[/] {message}")
+    # Use the logging system with styling
+    success_msg = f"[bold green]SUCCESS:[/] {message}"
+    logging.info(success_msg)
 
 
 def print_warning(message: str):
     """Print a warning message with styling."""
-    console.print(f"[bold yellow]WARNING:[/] {message}")
+    # Use the logging system with styling
+    warning_msg = f"[bold yellow]WARNING:[/] {message}"
+    logging.warning(warning_msg)
 
 
 def print_error(message: str):
     """Print an error message with styling."""
-    console.print(f"[bold red]ERROR:[/] {message}")
+    # Use the logging system with styling
+    error_msg = f"[bold red]ERROR:[/] {message}"
+    logging.error(error_msg)
 
 
 def print_panel(message: str, title: str = None, style: str = "blue"):
