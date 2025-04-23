@@ -295,13 +295,14 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
     for i in range(probs_test.shape[1]):
         test_df_output[f'prob_class{i}'] = probs_test[:, i]
 
-    # Add predicted class
-    test_df_output['predicted'] = y_pred
+    # Add predicted class as integer
+    test_df_output['predicted'] = y_pred.astype(int)
 
     # Add actual class based on streak_length
     # Add actual class and hit/miss columns
     if 'target_cluster' in test_df_output.columns:
-        test_df_output['actual_class'] = test_df_output['target_cluster']
+        test_df_output['actual_class'] = test_df_output['target_cluster'].astype(
+            int)
     else:
         # Recalculate actual class from streak_length if needed
         conditions = []
@@ -321,26 +322,13 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
             results.append(i)
 
         test_df_output['actual_class'] = np.select(
-            conditions, results, default=np.nan)
+            conditions, results, default=np.nan).astype(int)
 
     # Add hit/miss column (1 if prediction matches actual, 0 otherwise)
     test_df_output['hit_miss'] = (
         test_df_output['predicted'] == test_df_output['actual_class']).astype(int)
 
-    # Add descriptive columns for better readability
-    test_df_output['actual_range'] = test_df_output['actual_class'].map({
-        0: f"1-{int(percentile_values[0])}",
-        1: f"{int(percentile_values[0])+1}-{int(percentile_values[1])}",
-        2: f"{int(percentile_values[1])+1}-{int(percentile_values[2])}",
-        3: f">{int(percentile_values[2])}"
-    })
-
-    test_df_output['predicted_range'] = test_df_output['predicted'].map({
-        0: f"1-{int(percentile_values[0])}",
-        1: f"{int(percentile_values[0])+1}-{int(percentile_values[1])}",
-        2: f"{int(percentile_values[1])+1}-{int(percentile_values[2])}",
-        3: f">{int(percentile_values[2])}"
-    })
+    # Remove the descriptive range columns - not needed
 
     # Save the test predictions
     test_preds_path = os.path.join(output_dir, "test_predictions.csv")
