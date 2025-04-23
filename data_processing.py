@@ -108,6 +108,7 @@ def calculate_streak_percentiles(streak_lengths: List[int]) -> Dict[str, float]:
         Dictionary of percentiles
     """
     percentiles = {
+        "P25": np.percentile(streak_lengths, 25),
         "P50": np.percentile(streak_lengths, 50),
         "P75": np.percentile(streak_lengths, 75),
         "P90": np.percentile(streak_lengths, 90),

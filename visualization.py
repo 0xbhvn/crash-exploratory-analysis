@@ -76,6 +76,7 @@ def plot_streaks(streak_lengths, percentiles: Dict[str, float], output_dir: str,
     # Create stats for the plots
     plot_stats = {
         "Total Streaks": len(df['streak_length']),
+        "25th Percentile": f"{percentiles['P25']:.1f}",
         "Median (P50)": f"{percentiles['P50']:.1f}",
         "75th Percentile": f"{percentiles['P75']:.1f}",
         "90th Percentile": f"{percentiles['P90']:.1f}",
