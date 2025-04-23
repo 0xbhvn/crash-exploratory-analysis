@@ -239,24 +239,55 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
     }
     create_stats_table("Model Evaluation Metrics", model_metrics)
 
-    # Compute and display a classification report
+    # Get full classification report
     report = classification_report(y_test, y_pred, output_dict=True)
+
+    # Create an improved classification report table with all metrics
     report_table = create_table("Classification Report", [
-                                "Class", "Precision", "Recall", "F1-Score", "Support"])
+        "Class", "Precision", "Recall", "F1-Score", "Support"])
 
-    # Add accuracy row
-    add_table_row(report_table, ["accuracy", "", "",
-                                 f"{report['accuracy']:.2f}",
-                                 f"{len(y_test)}"])
+    # Add rows for each class
+    for class_id in sorted([k for k in report.keys() if k not in ['accuracy', 'macro avg', 'weighted avg']]):
+        class_metrics = report[class_id]
+        class_name = f"Class {class_id}"
+        add_table_row(report_table, [
+            class_name,
+            f"{class_metrics['precision']:.4f}",
+            f"{class_metrics['recall']:.4f}",
+            f"{class_metrics['f1-score']:.4f}",
+            f"{class_metrics['support']}"
+        ])
 
-    # Display the table
+    # Add accuracy, macro avg, and weighted avg
+    for avg_type in ['accuracy', 'macro avg', 'weighted avg']:
+        if avg_type in report:
+            metrics = report[avg_type]
+            if avg_type == 'accuracy':
+                add_table_row(report_table, [
+                    avg_type,
+                    "",
+                    "",
+                    f"{metrics:.4f}" if isinstance(
+                        metrics, float) else f"{metrics['f1-score']:.4f}",
+                    f"{sum(report[c]['support'] for c in report if c not in ['accuracy', 'macro avg', 'weighted avg'])}"
+                ])
+            else:
+                add_table_row(report_table, [
+                    avg_type,
+                    f"{metrics['precision']:.4f}",
+                    f"{metrics['recall']:.4f}",
+                    f"{metrics['f1-score']:.4f}",
+                    f"{metrics['support']}"
+                ])
+
+    # Display the full table
     display_table(report_table)
 
     # Generate confusion matrix
     generate_confusion_matrix(X_test, y_test, bst_final,
                               feature_cols, output_dir, percentiles)
 
-    # Save test predictions
+    # Save test predictions with additional columns
     # Assemble into a dataframe
     test_df_output = test_df.copy()
 
@@ -267,10 +298,80 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
     # Add predicted class
     test_df_output['predicted'] = y_pred
 
+    # Add actual class based on streak_length
+    # Add actual class and hit/miss columns
+    if 'target_cluster' in test_df_output.columns:
+        test_df_output['actual_class'] = test_df_output['target_cluster']
+    else:
+        # Recalculate actual class from streak_length if needed
+        conditions = []
+        results = []
+        for i in range(len(percentiles) + 1):
+            if i == 0:
+                conditions.append(
+                    test_df_output['streak_length'] <= percentile_values[0])
+            elif i == len(percentiles):
+                conditions.append(
+                    test_df_output['streak_length'] > percentile_values[-1])
+            else:
+                conditions.append(
+                    (test_df_output['streak_length'] > percentile_values[i-1]) &
+                    (test_df_output['streak_length'] <= percentile_values[i])
+                )
+            results.append(i)
+
+        test_df_output['actual_class'] = np.select(
+            conditions, results, default=np.nan)
+
+    # Add hit/miss column (1 if prediction matches actual, 0 otherwise)
+    test_df_output['hit_miss'] = (
+        test_df_output['predicted'] == test_df_output['actual_class']).astype(int)
+
+    # Add descriptive columns for better readability
+    test_df_output['actual_range'] = test_df_output['actual_class'].map({
+        0: f"1-{int(percentile_values[0])}",
+        1: f"{int(percentile_values[0])+1}-{int(percentile_values[1])}",
+        2: f"{int(percentile_values[1])+1}-{int(percentile_values[2])}",
+        3: f">{int(percentile_values[2])}"
+    })
+
+    test_df_output['predicted_range'] = test_df_output['predicted'].map({
+        0: f"1-{int(percentile_values[0])}",
+        1: f"{int(percentile_values[0])+1}-{int(percentile_values[1])}",
+        2: f"{int(percentile_values[1])+1}-{int(percentile_values[2])}",
+        3: f">{int(percentile_values[2])}"
+    })
+
     # Save the test predictions
     test_preds_path = os.path.join(output_dir, "test_predictions.csv")
     test_df_output.to_csv(test_preds_path)
     print_info(f"Saved detailed streak test predictions to {test_preds_path}")
+
+    # Calculate and display hit/miss stats
+    hit_rate = test_df_output['hit_miss'].mean() * 100
+    print_success(f"Overall prediction accuracy: {hit_rate:.2f}%")
+
+    # Print per-class hit rates
+    class_hit_rates = test_df_output.groupby(
+        'actual_class')['hit_miss'].mean() * 100
+    hit_rates_table = create_table(
+        "Per-Class Accuracy", ["Class", "Range", "Accuracy"])
+
+    for class_id, hit_rate in class_hit_rates.items():
+        class_range = {
+            0: f"1-{int(percentile_values[0])}",
+            1: f"{int(percentile_values[0])+1}-{int(percentile_values[1])}",
+            2: f"{int(percentile_values[1])+1}-{int(percentile_values[2])}",
+            3: f">{int(percentile_values[2])}"
+        }.get(class_id, "Unknown")
+
+        add_table_row(hit_rates_table, [
+            f"Class {int(class_id)}",
+            class_range,
+            f"{hit_rate:.2f}%"
+        ])
+
+    display_table(hit_rates_table)
 
     return bst_final, baseline_probs, p_hat
 
