@@ -11,6 +11,7 @@ import logging
 import pandas as pd
 import numpy as np
 import xgboost as xgb
+import joblib
 from typing import Dict, List, Tuple, Optional, Any
 
 # Import from local modules
@@ -356,7 +357,20 @@ class CrashStreakAnalyzer:
             Dictionary of cluster probabilities for streak lengths
         """
         if self.bst_final is None:
-            raise ValueError("Model not trained. Call train_model() first.")
+            model_path = os.path.join(self.output_dir, "xgboost_model.pkl")
+            if os.path.exists(model_path):
+                print_info(f"Loading model from {model_path}")
+                try:
+                    self.bst_final = joblib.load(model_path)
+                except Exception as e:
+                    print_error(f"Error loading model: {str(e)}")
+                    # Fall back to uniform distribution
+                    return {str(i): 1.0 / self.NUM_CLUSTERS for i in range(self.NUM_CLUSTERS)}
+            else:
+                print_error(
+                    "No trained model available. Train model first or provide model path.")
+                # Fall back to uniform distribution
+                return {str(i): 1.0 / self.NUM_CLUSTERS for i in range(self.NUM_CLUSTERS)}
 
         # If no streaks provided, extract the last WINDOW streaks from our data
         if recent_streaks is None:
@@ -389,12 +403,20 @@ class CrashStreakAnalyzer:
                             recent_streaks = self.df.head(
                                 self.WINDOW).to_dict('records')
                         else:
-                            raise ValueError(
+                            print_error(
                                 "Cannot extract streaks - DataFrame format not recognized")
+                            # Create dummy streaks as fallback (will use uniform distribution)
+                            recent_streaks = []
                 except Exception as e:
                     print_error(f"Error extracting streaks: {str(e)}")
                     # Create empty streaks as fallback
                     recent_streaks = []
+
+        # Check if we have any streaks
+        if not recent_streaks:
+            print_warning(
+                "No streaks available for prediction. Using uniform distribution.")
+            return {str(i): 1.0 / self.NUM_CLUSTERS for i in range(self.NUM_CLUSTERS)}
 
         # Check if bst_final is a model or a bundle
         model = self.bst_final
@@ -405,12 +427,24 @@ class CrashStreakAnalyzer:
             model = self.bst_final["model"]
             if "feature_cols" in self.bst_final:
                 feature_cols = self.bst_final["feature_cols"]
+                print_info(
+                    f"Using {len(feature_cols)} feature columns from model bundle")
+            else:
+                print_warning(
+                    "Model bundle doesn't contain feature columns list")
 
-        results = modeling.predict_next_cluster(
-            model, recent_streaks,
-            self.WINDOW, feature_cols, self.MULTIPLIER_THRESHOLD,
-            percentiles=self.PERCENTILES
-        )
+        try:
+            results = modeling.predict_next_cluster(
+                model, recent_streaks,
+                self.WINDOW, feature_cols, self.MULTIPLIER_THRESHOLD,
+                percentiles=self.PERCENTILES
+            )
+        except Exception as e:
+            print_error(f"Prediction error: {str(e)}")
+            print_error("Traceback: ", exc_info=True)
+            # Fall back to uniform distribution
+            results = {
+                str(i): 1.0 / self.NUM_CLUSTERS for i in range(self.NUM_CLUSTERS)}
 
         # Display prediction results in a table
         prediction_table = create_table(

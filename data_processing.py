@@ -194,13 +194,14 @@ def extract_streaks_and_multipliers(df: pd.DataFrame, multiplier_threshold: floa
     return streak_df
 
 
-def create_streak_features(streak_df: pd.DataFrame, lookback_window: int = 5) -> pd.DataFrame:
+def create_streak_features(streak_df: pd.DataFrame, lookback_window: int = 5, prediction_mode: bool = False) -> pd.DataFrame:
     """
     Create features from streak data for predicting next streak length.
 
     Args:
         streak_df: DataFrame with streak information
         lookback_window: Number of previous streaks to consider for features
+        prediction_mode: If True, don't drop rows with missing lookback data (for prediction)
 
     Returns:
         DataFrame with features and target for each streak
@@ -212,7 +213,8 @@ def create_streak_features(streak_df: pd.DataFrame, lookback_window: int = 5) ->
     streak_df = streak_df.copy()
 
     # Sort by streak number to ensure correct sequence
-    streak_df = streak_df.sort_values('streak_number')
+    if 'streak_number' in streak_df.columns:
+        streak_df = streak_df.sort_values('streak_number')
 
     # --- Efficient feature creation approach ---
     # Initialize dictionaries to hold feature columns before concat
@@ -221,15 +223,17 @@ def create_streak_features(streak_df: pd.DataFrame, lookback_window: int = 5) ->
 
     # Create lagged features all at once
     for col in ['streak_length', 'mean_multiplier', 'max_multiplier', 'pct_gt5']:
-        for i in range(1, lookback_window + 1):
-            lagged_features[f'prev{i}_{col}'] = streak_df[col].shift(i)
+        if col in streak_df.columns:  # Only create features for existing columns
+            for i in range(1, lookback_window + 1):
+                lagged_features[f'prev{i}_{col}'] = streak_df[col].shift(i)
 
     # Create rolling window features all at once
     for col in ['streak_length', 'mean_multiplier', 'max_multiplier', 'pct_gt5']:
-        rolling_features[f'rolling_mean_{col}'] = streak_df[col].shift(
-            1).rolling(lookback_window, min_periods=1).mean()
-        rolling_features[f'rolling_std_{col}'] = streak_df[col].shift(
-            1).rolling(lookback_window, min_periods=2).std().fillna(0)
+        if col in streak_df.columns:  # Only create features for existing columns
+            rolling_features[f'rolling_mean_{col}'] = streak_df[col].shift(
+                1).rolling(lookback_window, min_periods=1).mean()
+            rolling_features[f'rolling_std_{col}'] = streak_df[col].shift(
+                1).rolling(lookback_window, min_periods=2).std().fillna(0)
 
     # Create DataFrames from the dictionaries
     lagged_df = pd.DataFrame(lagged_features, index=streak_df.index)
@@ -238,12 +242,20 @@ def create_streak_features(streak_df: pd.DataFrame, lookback_window: int = 5) ->
     # Concat all feature sets efficiently
     features_df = pd.concat([streak_df, lagged_df, rolling_df], axis=1)
 
-    # Drop rows with NaN values (first lookback_window rows)
-    features_df = features_df.dropna(
-        subset=[f'prev{lookback_window}_streak_length'])
+    # Drop rows with NaN values (first lookback_window rows) - but not in prediction mode
+    if not prediction_mode:
+        initial_rows = len(features_df)
+        features_df = features_df.dropna(
+            subset=[f'prev{lookback_window}_streak_length'])
+        dropped_rows = initial_rows - len(features_df)
+        if dropped_rows > 0:
+            print_info(
+                f"Dropped {dropped_rows} rows due to insufficient history for full lookback window")
 
     # Set the target as the current streak length
-    features_df.loc[:, 'target_streak_length'] = features_df['streak_length']
+    if 'streak_length' in streak_df.columns:
+        features_df.loc[:,
+                        'target_streak_length'] = features_df['streak_length']
 
     print_info(
         f"Created {features_df.shape[1]} features from streak properties")
@@ -367,8 +379,9 @@ def make_feature_vector(last_streaks: List[Dict], window: int, feature_cols: Lis
             "No streaks provided for feature creation. Using zeros.")
         return pd.Series(0.0, index=feature_cols)
 
-    # Create the same features as in training
-    features_df = create_streak_features(streak_df, lookback_window=window)
+    # Create the same features as in training, but in prediction mode to keep rows even with missing lags
+    features_df = create_streak_features(
+        streak_df, lookback_window=window, prediction_mode=True)
 
     # Get the last row which contains features for the most recent streaks
     if not features_df.empty:

@@ -604,14 +604,21 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
         # Create DataFrame from streaks
         streak_df = pd.DataFrame(last_streaks)
 
-        # Create features
-        features_df = create_streak_features(streak_df, lookback_window=window)
+        # Create features using prediction mode to avoid dropping rows with insufficient history
+        print_info(f"Creating features from {len(streak_df)} streaks")
 
-        # Get the last row for prediction
-        if features_df.empty:
-            raise ValueError("Failed to create features from streak data")
+        # For prediction, use the create_streak_features with prediction_mode=True
+        from data_processing import create_streak_features
+        features_df = create_streak_features(
+            streak_df, lookback_window=window, prediction_mode=True)
 
-        last_features = features_df.iloc[-1]
+        # Get the last row for prediction - prediction_mode keeps all rows
+        if not features_df.empty:
+            last_features = features_df.iloc[-1]
+            print_info(
+                f"Successfully created features from streak data with {len(features_df.columns)} columns")
+        else:
+            raise ValueError("Empty features DataFrame created")
 
         # Align feature vector with the expected feature names from training
         if feature_cols:
