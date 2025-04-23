@@ -362,8 +362,10 @@ def make_feature_vector(last_streaks: List[Dict], window: int, feature_cols: Lis
     streak_df = pd.DataFrame(last_streaks)
 
     if len(streak_df) == 0:
-        # If no streaks provided, return NaN values
-        return pd.Series({col: np.nan for col in feature_cols})
+        # If no streaks provided, return zeros for all expected features
+        logger.warning(
+            "No streaks provided for feature creation. Using zeros.")
+        return pd.Series(0.0, index=feature_cols)
 
     # Create the same features as in training
     features_df = create_streak_features(streak_df, lookback_window=window)
@@ -371,10 +373,18 @@ def make_feature_vector(last_streaks: List[Dict], window: int, feature_cols: Lis
     # Get the last row which contains features for the most recent streaks
     if not features_df.empty:
         last_features = features_df.iloc[-1]
-    else:
-        # If we don't have enough data, create a Series with NaN values
-        last_features = pd.Series({col: np.nan for col in feature_cols})
 
-    # Create Series with same names as training data
-    result = pd.Series({k: last_features.get(k, np.nan) for k in feature_cols})
-    return result
+        # Create aligned feature vector with expected column names
+        aligned_features = pd.Series(0.0, index=feature_cols)
+
+        # Update values where features exist in both
+        for col in feature_cols:
+            if col in last_features:
+                aligned_features[col] = last_features[col]
+
+        return aligned_features
+    else:
+        # If we don't have enough data, create a Series with zeros
+        logger.warning(
+            "Failed to create feature matrix. Using zeros for all features.")
+        return pd.Series(0.0, index=feature_cols)

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def train_model(df: pd.DataFrame, feature_cols: List[str],
                 test_frac: float, random_seed: int, eval_folds: int = 5,
                 output_dir: str = './output', multiplier_threshold: float = 10.0,
-                percentiles: List[float] = [0.25, 0.50, 0.75]) -> Tuple[xgb.Booster, Dict[str, float], float]:
+                percentiles: List[float] = [0.25, 0.50, 0.75], window: int = 50) -> Tuple[xgb.Booster, Dict[str, float], float]:
     """
     Train an XGBoost model for streak length prediction.
 
@@ -43,6 +43,7 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
         output_dir: Directory to save model and outputs
         multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
         percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
+        window: Lookback window size for cross-validation
 
     Returns:
         Tuple of (trained model, baseline probabilities, empirical hit rate)
@@ -140,7 +141,8 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
         subsample=0.8,
         colsample_bytree=0.8,
         eval_metric="mlogloss",
-        seed=random_seed
+        seed=random_seed,
+        lookback=window  # Store lookback window size for cross-validation
     )
 
     # Display model parameters
@@ -173,7 +175,7 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
 
     # Perform CV using a sample of data for each fold
     n_train = len(X_train)
-    for fold, (tr_idx, val_idx) in enumerate(rolling_origin_indices(n_train, eval_folds), 1):
+    for fold, (tr_idx, val_idx) in enumerate(rolling_origin_indices(n_train, eval_folds, gap=params.get('lookback', 50)), 1):
 
         # Ensure validation set is not too large
         if len(val_idx) > 5000:
@@ -217,7 +219,16 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
 
     # Save the model
     model_path = os.path.join(output_dir, "xgboost_model.pkl")
-    joblib.dump(bst_final, model_path)
+    model_bundle = {
+        "model": bst_final,
+        "feature_cols": feature_cols,
+        "percentiles": percentiles,
+        "percentile_values": [df['target_streak_length'].quantile(p) for p in percentiles],
+        "window": window,
+        "baseline_probs": baseline_probs,
+        "p_hat": p_hat
+    }
+    joblib.dump(model_bundle, model_path)
     print_success(f"Saved streak-based model to {model_path}")
 
     # Test-set evaluation
@@ -361,24 +372,35 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
 
     display_table(hit_rates_table)
 
-    return bst_final, baseline_probs, p_hat
+    return model_bundle
 
 
-def rolling_origin_indices(n_train: int, n_folds: int):
+def rolling_origin_indices(n_train: int, n_folds: int, min_val_size: int = 1000, gap: int = 0):
     """
-    Generate indices for rolling-origin cross-validation.
+    Generate indices for rolling-origin cross-validation with time series safety.
 
     Args:
         n_train: Number of training samples
         n_folds: Number of folds
+        min_val_size: Minimum size for validation sets
+        gap: Gap between training and validation sets (for feature creation)
 
     Yields:
         Tuple of (train_indices, validation_indices)
     """
     fold_size = n_train // n_folds
+    test_size = 5000  # Fixed test size for more consistent evaluation
+
     for i in range(1, n_folds + 1):
-        split = fold_size * i
-        yield range(0, split), range(split, min(split + fold_size, n_train))
+        train_end = min(fold_size * i, n_train - test_size - gap)
+        val_start = train_end + gap
+        val_end = min(val_start + test_size, n_train)
+
+        # Skip fold if validation set is too small
+        if (val_end - val_start) < min_val_size:
+            continue
+
+        yield range(0, train_end), range(val_start, val_end)
 
 
 def best_round(bst, default_rounds: int) -> int:
@@ -535,24 +557,35 @@ def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir,
     print_info(f"Saved detailed test predictions to {results_path}")
 
 
-def predict_next_cluster(model, last_streaks: List[Dict], window: int,
-                         feature_cols: List[str], multiplier_threshold: float = 10.0,
+def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
+                         feature_cols: List[str] = None, multiplier_threshold: float = 10.0,
                          percentiles: List[float] = [0.25, 0.50, 0.75]) -> Dict[str, float]:
     """
     Predict the next streak length cluster based on recent streak patterns.
 
     Args:
-        model: Trained XGBoost model
+        model_or_path: Trained XGBoost model or path to model file
         last_streaks: List of dictionaries with recent streak information
         window: Number of previous streaks to consider
-        feature_cols: List of feature column names
+        feature_cols: List of feature column names (if not included in model bundle)
         multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
         percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
 
     Returns:
         Dictionary of cluster probabilities
     """
-    from data_processing import make_feature_vector
+    from data_processing import make_feature_vector, create_streak_features
+
+    # Load model if path is provided
+    model_bundle = None
+    if isinstance(model_or_path, str):
+        model_bundle = joblib.load(model_or_path)
+        model = model_bundle.get("model")
+        saved_feature_cols = model_bundle.get("feature_cols")
+        if saved_feature_cols:
+            feature_cols = saved_feature_cols
+    else:
+        model = model_or_path  # Already a model object
 
     # Handle empty streaks gracefully
     if not last_streaks:
@@ -568,13 +601,37 @@ def predict_next_cluster(model, last_streaks: List[Dict], window: int,
             f"Expected at least {window} streaks, but got {len(last_streaks)}. Results may be less accurate.")
 
     try:
-        # Create feature vector from streak data
-        feat_vec = make_feature_vector(last_streaks, window, feature_cols)
+        # Create DataFrame from streaks
+        streak_df = pd.DataFrame(last_streaks)
+
+        # Create features
+        features_df = create_streak_features(streak_df, lookback_window=window)
+
+        # Get the last row for prediction
+        if features_df.empty:
+            raise ValueError("Failed to create features from streak data")
+
+        last_features = features_df.iloc[-1]
+
+        # Align feature vector with the expected feature names from training
+        if feature_cols:
+            # Create a Series with the expected feature columns, filling missing ones with 0
+            aligned_features = pd.Series(0.0, index=feature_cols)
+
+            # Update values where features exist
+            for col in feature_cols:
+                if col in last_features:
+                    aligned_features[col] = last_features[col]
+
+            feat_vec = aligned_features
+        else:
+            # Fallback if no feature columns provided
+            feat_vec = last_features
 
         # Check for missing values
         if feat_vec.isna().any():
             print_warning(
-                f"Found missing values in feature vector. Filling with zeros.")
+                "Found missing values in feature vector. Filling with zeros.")
             feat_vec = feat_vec.fillna(0)
 
         # Make prediction

@@ -286,24 +286,43 @@ class CrashStreakAnalyzer:
         """
         print_info("Training model to predict streak length clusters")
 
-        self.bst_final, self.baseline_probs, self.p_hat = modeling.train_model(
+        model_results = modeling.train_model(
             self.df, self.feature_cols,
             self.TEST_FRAC, self.RANDOM_SEED, eval_folds,
             self.output_dir, self.MULTIPLIER_THRESHOLD,
-            percentiles=self.PERCENTILES
+            percentiles=self.PERCENTILES,
+            window=self.WINDOW
         )
 
+        # model_results can be either a tuple of (model, baseline_probs, p_hat)
+        # or a new-style bundle including the model
+        if isinstance(model_results, tuple) and len(model_results) == 3:
+            self.bst_final, self.baseline_probs, self.p_hat = model_results
+        else:
+            # Store the entire bundle
+            self.bst_final = model_results
+            if isinstance(model_results, dict):
+                if "model" in model_results and hasattr(model_results["model"], "predict"):
+                    # Extract baseline_probs and p_hat if they're in the bundle
+                    self.baseline_probs = model_results.get(
+                        "baseline_probs", {})
+                    self.p_hat = model_results.get("p_hat", 1.0)
+
         # Generate feature importance plot
+        model_to_plot = self.bst_final
+        if isinstance(self.bst_final, dict) and "model" in self.bst_final:
+            model_to_plot = self.bst_final["model"]
+
         visualization.plot_feature_importance(
-            self.bst_final, self.feature_cols, self.output_dir)
+            model_to_plot, self.feature_cols, self.output_dir)
 
         print_success("Model training complete")
 
         # Display model evaluation metrics if available
-        if hasattr(self.bst_final, 'best_score'):
+        if hasattr(model_to_plot, 'best_score'):
             metrics = {
-                "Best Validation Score": self.bst_final.best_score,
-                "Number of Trees": self.bst_final.best_iteration + 1,
+                "Best Validation Score": model_to_plot.best_score,
+                "Number of Trees": model_to_plot.best_iteration + 1,
                 f"{self.MULTIPLIER_THRESHOLD}× Base Rate": f"{self.p_hat * 100:.2f}%"
             }
 
@@ -377,9 +396,19 @@ class CrashStreakAnalyzer:
                     # Create empty streaks as fallback
                     recent_streaks = []
 
+        # Check if bst_final is a model or a bundle
+        model = self.bst_final
+        feature_cols = self.feature_cols
+
+        # For backward compatibility: if bst_final is a dict/bundle, extract model and feature_cols
+        if isinstance(self.bst_final, dict) and "model" in self.bst_final:
+            model = self.bst_final["model"]
+            if "feature_cols" in self.bst_final:
+                feature_cols = self.bst_final["feature_cols"]
+
         results = modeling.predict_next_cluster(
-            self.bst_final, recent_streaks,
-            self.WINDOW, self.feature_cols, self.MULTIPLIER_THRESHOLD,
+            model, recent_streaks,
+            self.WINDOW, feature_cols, self.MULTIPLIER_THRESHOLD,
             percentiles=self.PERCENTILES
         )
 
