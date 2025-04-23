@@ -208,26 +208,28 @@ class CrashStreakAnalyzer:
 
     def prepare_features(self) -> pd.DataFrame:
         """
-        Prepare features for machine learning using percentile-based clustering.
+        Prepare features for machine learning using streak-based analysis.
 
         Returns:
             DataFrame with features and target clustered by percentiles
         """
-        print_info("Preparing features for machine learning")
+        print_info("Preparing streak-based features for machine learning")
+
+        # The window parameter is now used as a lookback window of previous streaks rather than games
         self.df, self.feature_cols = data_processing.prepare_features(
             self.df, self.WINDOW,
             multiplier_threshold=self.MULTIPLIER_THRESHOLD,
             percentiles=self.PERCENTILES)
 
         # Get the percentile values for display purposes
-        if 'next_streak_length' in self.df.columns:
+        if 'target_streak_length' in self.df.columns:
             self.percentile_values = [
-                self.df['next_streak_length'].quantile(p) for p in self.PERCENTILES]
+                self.df['target_streak_length'].quantile(p) for p in self.PERCENTILES]
 
         # Display feature information
         feature_info = {
             "Number of Features": len(self.feature_cols),
-            "Samples": len(self.df),
+            "Streaks Analyzed": len(self.df),
             "Target Classes": len(self.df["target_cluster"].unique()),
         }
 
@@ -246,7 +248,7 @@ class CrashStreakAnalyzer:
 
             feature_info[description] = (self.df["target_cluster"] == i).sum()
 
-        create_stats_table("Feature Matrix Information", feature_info)
+        create_stats_table("Streak Feature Matrix Information", feature_info)
 
         # Display sample of features
         if len(self.feature_cols) > 0:
@@ -258,7 +260,7 @@ class CrashStreakAnalyzer:
             cols_to_show = self.feature_cols[:5] + ["target_cluster"]
 
             sample_table = create_table(
-                "Feature Sample (First 5 columns)", cols_to_show)
+                "Streak Feature Sample (First 5 columns)", cols_to_show)
             for _, row in feature_sample.iterrows():
                 row_values = [f"{row[col]:.4f}" if isinstance(row[col], float) else str(row[col])
                               for col in cols_to_show]
@@ -323,12 +325,13 @@ class CrashStreakAnalyzer:
 
         return self.bst_final
 
-    def predict_next_cluster(self, last_window_multipliers: List[float]) -> Dict[str, float]:
+    def predict_next_cluster(self, recent_streaks: List[Dict] = None) -> Dict[str, float]:
         """
-        Predict the next cluster based on recent multipliers.
+        Predict the next streak length cluster based on recent streak patterns.
 
         Args:
-            last_window_multipliers: List of last WINDOW multipliers
+            recent_streaks: List of dictionaries with recent streak information.
+                           If None, the last self.WINDOW streaks from the dataset will be used.
 
         Returns:
             Dictionary of cluster probabilities for streak lengths
@@ -336,15 +339,53 @@ class CrashStreakAnalyzer:
         if self.bst_final is None:
             raise ValueError("Model not trained. Call train_model() first.")
 
+        # If no streaks provided, extract the last WINDOW streaks from our data
+        if recent_streaks is None:
+            # Check if we already have a streak DataFrame
+            if hasattr(self, 'streak_df') and self.streak_df is not None and not self.streak_df.empty:
+                # Use existing streaks
+                recent_streaks = self.streak_df.tail(
+                    self.WINDOW).to_dict('records')
+                print_info(
+                    f"Using the last {len(recent_streaks)} streaks from existing streak dataframe for prediction")
+            else:
+                # Extract streaks from raw data if needed
+                from data_processing import extract_streaks_and_multipliers
+                try:
+                    # Make sure we have the expected columns
+                    if "Game ID" in self.df.columns and "Bust" in self.df.columns:
+                        self.streak_df = extract_streaks_and_multipliers(
+                            self.df, self.MULTIPLIER_THRESHOLD)
+                        # Store for future use
+                        recent_streaks = self.streak_df.tail(
+                            self.WINDOW).to_dict('records')
+                        print_info(
+                            f"Extracted {len(self.streak_df)} streaks, using last {len(recent_streaks)} for prediction")
+                    else:
+                        # Handle the case where self.df has already been processed
+                        print_warning(
+                            "DataFrame doesn't have expected columns. Creating features directly.")
+                        if 'target_cluster' in self.df.columns:
+                            # Already processed, reuse it directly
+                            recent_streaks = self.df.head(
+                                self.WINDOW).to_dict('records')
+                        else:
+                            raise ValueError(
+                                "Cannot extract streaks - DataFrame format not recognized")
+                except Exception as e:
+                    print_error(f"Error extracting streaks: {str(e)}")
+                    # Create empty streaks as fallback
+                    recent_streaks = []
+
         results = modeling.predict_next_cluster(
-            self.bst_final, last_window_multipliers,
+            self.bst_final, recent_streaks,
             self.WINDOW, self.feature_cols, self.MULTIPLIER_THRESHOLD,
             percentiles=self.PERCENTILES
         )
 
         # Display prediction results in a table
         prediction_table = create_table(
-            "Prediction Results", ["Cluster", "Description", "Probability"])
+            "Streak Prediction Results", ["Cluster", "Description", "Probability"])
 
         # Generate cluster descriptions based on percentiles
         cluster_descriptions = {}

@@ -119,63 +119,137 @@ def calculate_streak_percentiles(streak_lengths: List[int]) -> Dict[str, float]:
     return percentiles
 
 
-def add_rolling_features(frame: pd.DataFrame, window: int, multiplier_threshold: float = 10.0) -> Tuple[pd.DataFrame, List[str]]:
+def extract_streaks_and_multipliers(df: pd.DataFrame, multiplier_threshold: float = 10.0) -> pd.DataFrame:
     """
-    Add rolling window features to DataFrame.
+    Extract streaks and their associated multipliers from the raw data.
 
     Args:
-        frame: DataFrame with game data
-        window: Rolling window size
+        df: DataFrame with game data (Game ID, Bust)
         multiplier_threshold: Threshold for considering a multiplier as a hit
 
     Returns:
-        Tuple containing processed DataFrame and list of feature column names
+        DataFrame with streak information
     """
-    print_info(f"Adding rolling window features (window={window})")
+    print_info("Extracting streaks and their properties")
 
-    roll = frame["Bust"].rolling(window, min_periods=1)
-    frame[f"mean_{window}"] = roll.mean()
-    frame[f"std_{window}"] = roll.std().fillna(0)
-    frame[f"max_{window}"] = roll.max()
-    frame[f"min_{window}"] = roll.min()
-    frame[f"pct_gt2_{window}"] = frame["Bust"].gt(2).rolling(window).mean()
-    frame[f"pct_gt5_{window}"] = frame["Bust"].gt(5).rolling(window).mean()
+    # Check if DataFrame has required columns
+    required_cols = ["Game ID", "Bust"]
+    if not all(col in df.columns for col in required_cols):
+        # If we're dealing with a transformed DataFrame, it might be the result of previous processing
+        if isinstance(df, pd.DataFrame) and 'streak_number' in df.columns:
+            # Already a streak DataFrame, just return it
+            print_info(
+                f"Using existing streak DataFrame with {len(df)} streaks")
+            return df
+        else:
+            raise ValueError(
+                f"Input DataFrame must have columns {required_cols} or already be a streak DataFrame")
 
-    print_info(f"Added 6 rolling features: mean, std, max, min, pct_gt2, pct_gt5")
+    # Initialize variables
+    streaks = []
+    current_streak = []
+    current_streak_ids = []
+    streak_number = 0
 
-    # Define feature columns
-    feature_cols = [
-        # Rolling statistics features
-        f"mean_{window}",
-        f"std_{window}",
-        f"max_{window}",
-        f"min_{window}",
-        f"pct_gt2_{window}",
-        f"pct_gt5_{window}"
-    ]
+    # Process each game
+    for i, (game_id, bust) in enumerate(zip(df["Game ID"], df["Bust"])):
+        # Add current game to the streak
+        current_streak.append(bust)
+        current_streak_ids.append(game_id)
 
-    # Add interaction features if all components are present
-    interaction_features = [
-        (f"mean_{window}", f"pct_gt2_{window}"),
-        (f"mean_{window}", f"pct_gt5_{window}"),
-        (f"mean_{window}", f"std_{window}")
-    ]
+        # If we hit the threshold, complete the streak
+        if bust >= multiplier_threshold:
+            streak_number += 1
+            streak_length = len(current_streak)
 
-    for feat1, feat2 in interaction_features:
-        if feat1 in frame.columns and feat2 in frame.columns:
-            feat_name = f"{feat1}_x_{feat2}"
-            frame[feat_name] = frame[feat1] * frame[feat2]
-            feature_cols.append(feat_name)
+            # Calculate streak properties
+            streak_info = {
+                'streak_number': streak_number,
+                'start_game_id': current_streak_ids[0],
+                'end_game_id': current_streak_ids[-1],
+                'streak_length': streak_length,
+                'hit_multiplier': bust,
+                'mean_multiplier': np.mean(current_streak),
+                'std_multiplier': np.std(current_streak) if len(current_streak) > 1 else 0,
+                'max_multiplier': np.max(current_streak),
+                'min_multiplier': np.min(current_streak),
+                'pct_gt2': np.mean([m > 2 for m in current_streak]),
+                'pct_gt5': np.mean([m > 5 for m in current_streak])
+            }
 
-    # Feature scaling
-    scaler = StandardScaler()
-    frame[feature_cols] = scaler.fit_transform(frame[feature_cols])
+            # Add all multipliers in the streak
+            for j, mult in enumerate(current_streak):
+                streak_info[f'multiplier_{j+1}'] = mult
 
-    # Summary information
-    logger.info(f"Prepared {len(feature_cols)} features for machine learning")
-    logger.info(f"Final feature matrix shape: {frame.shape}")
+            streaks.append(streak_info)
 
-    return frame, feature_cols
+            # Reset streak
+            current_streak = []
+            current_streak_ids = []
+
+    # Convert to DataFrame
+    streak_df = pd.DataFrame(streaks)
+    print_info(f"Extracted {len(streak_df)} complete streaks")
+
+    return streak_df
+
+
+def create_streak_features(streak_df: pd.DataFrame, lookback_window: int = 5) -> pd.DataFrame:
+    """
+    Create features from streak data for predicting next streak length.
+
+    Args:
+        streak_df: DataFrame with streak information
+        lookback_window: Number of previous streaks to consider for features
+
+    Returns:
+        DataFrame with features and target for each streak
+    """
+    print_info(
+        f"Creating streak-based features with lookback={lookback_window}")
+
+    # Make a copy to avoid fragmentation and SettingWithCopyWarning
+    streak_df = streak_df.copy()
+
+    # Sort by streak number to ensure correct sequence
+    streak_df = streak_df.sort_values('streak_number')
+
+    # --- Efficient feature creation approach ---
+    # Initialize dictionaries to hold feature columns before concat
+    lagged_features = {}
+    rolling_features = {}
+
+    # Create lagged features all at once
+    for col in ['streak_length', 'mean_multiplier', 'max_multiplier', 'pct_gt5']:
+        for i in range(1, lookback_window + 1):
+            lagged_features[f'prev{i}_{col}'] = streak_df[col].shift(i)
+
+    # Create rolling window features all at once
+    for col in ['streak_length', 'mean_multiplier', 'max_multiplier', 'pct_gt5']:
+        rolling_features[f'rolling_mean_{col}'] = streak_df[col].shift(
+            1).rolling(lookback_window, min_periods=1).mean()
+        rolling_features[f'rolling_std_{col}'] = streak_df[col].shift(
+            1).rolling(lookback_window, min_periods=2).std().fillna(0)
+
+    # Create DataFrames from the dictionaries
+    lagged_df = pd.DataFrame(lagged_features, index=streak_df.index)
+    rolling_df = pd.DataFrame(rolling_features, index=streak_df.index)
+
+    # Concat all feature sets efficiently
+    features_df = pd.concat([streak_df, lagged_df, rolling_df], axis=1)
+
+    # Drop rows with NaN values (first lookback_window rows)
+    features_df = features_df.dropna(
+        subset=[f'prev{lookback_window}_streak_length'])
+
+    # Set the target as the current streak length
+    features_df.loc[:, 'target_streak_length'] = features_df['streak_length']
+
+    print_info(
+        f"Created {features_df.shape[1]} features from streak properties")
+    print_info(f"Feature matrix shape: {features_df.shape}")
+
+    return features_df
 
 
 def prepare_features(df: pd.DataFrame,
@@ -186,107 +260,78 @@ def prepare_features(df: pd.DataFrame,
     """
     Prepare features for machine learning model training.
 
-    This function creates rolling window features and labels each target based on the
-    length of the next streak that includes a hit at or above the multiplier threshold.
+    This function creates streak-based features for predicting the length of the next streak.
     The clustering is done using customizable percentiles of streak lengths.
 
     Args:
         df: DataFrame with game data
-        window: Rolling window size for feature engineering
+        window: Number of previous streaks to consider (not games)
         multiplier_threshold: Threshold for considering a multiplier as a hit
-        percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
+        percentiles: List of percentile boundaries for clustering
 
     Returns:
         Tuple of (DataFrame with features, list of feature column names)
     """
-    logger.info(f"Preparing features with window={window}")
+    logger.info(f"Preparing streak-based features with lookback={window}")
 
-    # Feature engineering - Add rolling window features
-    df, rolling_feat_cols = add_rolling_features(
-        df, window, multiplier_threshold)
+    # Extract streaks and their properties
+    streak_df = extract_streaks_and_multipliers(df, multiplier_threshold)
 
-    feature_cols = rolling_feat_cols.copy()
-    logger.debug(f"Created {len(feature_cols)} features")
+    # Create features based on streak patterns
+    features_df = create_streak_features(streak_df, lookback_window=window)
 
-    # Add hit column for the multiplier threshold
-    # Convert threshold to string (integer if whole number)
-    threshold_str = str(int(multiplier_threshold)
-                        if multiplier_threshold.is_integer() else multiplier_threshold)
-    hit_col = f"is_hit{threshold_str}"
-    df[hit_col] = (df['Bust'] >= multiplier_threshold).astype(int)
-    logger.info(
-        f"Added column {hit_col} to track hits at or above {multiplier_threshold}×")
+    # Identify the feature columns (exclude target and metadata columns)
+    metadata_cols = ['streak_number', 'start_game_id', 'end_game_id',
+                     'streak_length', 'hit_multiplier', 'target_streak_length']
+    # Also exclude the multiplier_X columns
+    multiplier_cols = [
+        col for col in features_df.columns if col.startswith('multiplier_')]
 
-    # Create target variable - Get the streak length that includes the next hit
-    # More efficient algorithm to calculate next streak lengths
-    print_info("Calculating next streak lengths (this may take a moment)...")
+    feature_cols = [col for col in features_df.columns
+                    if col not in metadata_cols and col not in multiplier_cols]
 
-    # Find all hit positions
-    hit_positions = np.where(df['Bust'].values >= multiplier_threshold)[0]
-
-    # Create a mapping for each position to the next hit position
-    next_hit_map = {}
-    for i in range(len(hit_positions) - 1):
-        current_pos = hit_positions[i]
-        next_pos = hit_positions[i + 1]
-        # For all positions between current and next hit, the next hit is at next_pos
-        for pos in range(current_pos + 1, next_pos + 1):
-            next_hit_map[pos] = next_pos
-
-    # Calculate next streak lengths for the window positions
-    next_streak_lengths = []
-    max_valid_idx = len(df) - 1
-
-    for i in range(len(df) - window):
-        start_idx = i + window
-        if start_idx in next_hit_map and start_idx <= max_valid_idx:
-            # Calculate streak length (add 1 because we include the hit game)
-            streak_length = next_hit_map[start_idx] - start_idx + 1
-            next_streak_lengths.append(streak_length)
-        else:
-            next_streak_lengths.append(np.nan)
-
-    # Create a new DataFrame with features and target, dropping last window rows
-    features_df = df.iloc[:-window].copy()
-    features_df['next_streak_length'] = next_streak_lengths
-
-    # Remove rows with NaN target values
-    features_df = features_df.dropna(subset=['next_streak_length'])
-    logger.info(f"DataFrame after dropping NaN targets: {features_df.shape}")
-
-    # Calculate percentile boundaries for clustering
+    # Add target clustering based on percentiles
     percentile_values = [
-        features_df['next_streak_length'].quantile(p) for p in percentiles]
+        features_df['target_streak_length'].quantile(p) for p in percentiles]
 
     # Log percentile boundaries
     percentile_info = ", ".join(
         [f"P{int(p*100)}={val:.1f}" for p, val in zip(percentiles, percentile_values)])
     logger.info(f"Streak length percentile boundaries: {percentile_info}")
 
-    # Create conditions for clustering based on percentile boundaries
+    # Create conditions and results for clustering
     conditions = []
-    for i in range(len(percentile_values) + 1):
+    results = []
+
+    for i in range(len(percentiles) + 1):
         if i == 0:
             # First cluster: <= first percentile
             conditions.append(
-                features_df['next_streak_length'] <= percentile_values[0])
-        elif i == len(percentile_values):
+                features_df['target_streak_length'] <= percentile_values[0])
+        elif i == len(percentiles):
             # Last cluster: > last percentile
             conditions.append(
-                features_df['next_streak_length'] > percentile_values[-1])
+                features_df['target_streak_length'] > percentile_values[-1])
         else:
             # Middle clusters: between adjacent percentiles
             conditions.append(
-                (features_df['next_streak_length'] > percentile_values[i-1]) &
-                (features_df['next_streak_length'] <= percentile_values[i])
+                (features_df['target_streak_length'] > percentile_values[i-1]) &
+                (features_df['target_streak_length'] <= percentile_values[i])
             )
+        results.append(i)
 
     # Create clusters (0 to n, where n is the number of percentile boundaries + 1)
-    clusters = list(range(len(percentile_values) + 1))
-    features_df['target_cluster'] = np.select(
-        conditions, clusters, default=np.nan)
+    features_df = features_df.copy()  # Avoid fragmentation
+    features_df.loc[:, 'target_cluster'] = np.select(
+        conditions, results, default=np.nan)
+
+    # Feature scaling - create a new DataFrame to avoid modifying the original
+    scaler = StandardScaler()
+    features_df.loc[:, feature_cols] = scaler.fit_transform(
+        features_df[feature_cols])
 
     # Log cluster counts
+    clusters = list(range(len(percentiles) + 1))
     cluster_counts = []
     for i in clusters:
         count = (features_df['target_cluster'] == i).sum()
@@ -301,34 +346,35 @@ def prepare_features(df: pd.DataFrame,
     return features_df, feature_cols
 
 
-def make_feature_vector(last_window_multipliers: List[float], window: int, feature_cols: List[str]) -> pd.Series:
+def make_feature_vector(last_streaks: List[Dict], window: int, feature_cols: List[str]) -> pd.Series:
     """
-    Create a feature vector from recent multipliers.
+    Create a feature vector from recent streaks for prediction.
 
     Args:
-        last_window_multipliers: List of window most recent multipliers
-        window: Rolling window size
+        last_streaks: List of dictionaries containing recent streak information
+        window: Number of previous streaks to consider
         feature_cols: List of feature column names to include
 
     Returns:
         Series with feature values
     """
-    seq = pd.Series(last_window_multipliers)
+    # Convert list of streak dicts to DataFrame
+    streak_df = pd.DataFrame(last_streaks)
 
-    feat = {}
-    # Add rolling features
-    feat[f"mean_{window}"] = seq.mean()
-    feat[f"std_{window}"] = seq.std()
-    feat[f"max_{window}"] = seq.max()
-    feat[f"min_{window}"] = seq.min()
-    feat[f"pct_gt2_{window}"] = seq.gt(2).mean()
-    feat[f"pct_gt5_{window}"] = seq.gt(5).mean()
+    if len(streak_df) == 0:
+        # If no streaks provided, return NaN values
+        return pd.Series({col: np.nan for col in feature_cols})
 
-    # Add lagged values
-    for i, x in enumerate(reversed(last_window_multipliers), 1):
-        if i <= window:
-            feat[f"m_{i}"] = x
+    # Create the same features as in training
+    features_df = create_streak_features(streak_df, lookback_window=window)
+
+    # Get the last row which contains features for the most recent streaks
+    if not features_df.empty:
+        last_features = features_df.iloc[-1]
+    else:
+        # If we don't have enough data, create a Series with NaN values
+        last_features = pd.Series({col: np.nan for col in feature_cols})
 
     # Create Series with same names as training data
-    result = pd.Series({k: feat.get(k, np.nan) for k in feature_cols})
+    result = pd.Series({k: last_features.get(k, np.nan) for k in feature_cols})
     return result

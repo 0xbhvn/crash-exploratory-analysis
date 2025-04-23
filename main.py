@@ -154,7 +154,7 @@ def main():
         sys.exit(0)
 
     # Regular analysis pipeline
-    print_info("Running standard analysis pipeline")
+    print_info("Running standard streak-based analysis pipeline")
 
     # Analyze streaks
     streak_lengths = analyzer.analyze_streaks()
@@ -163,24 +163,24 @@ def main():
     if args.save_plots:
         analyzer.plot_streaks(streak_lengths)
 
-    # Prepare features
+    # Prepare streak-based features
     analyzer.prepare_features()
 
     # Train model
     analyzer.train_model()
 
-    # Example prediction with last window
-    demo_input = analyzer.df["Bust"].iloc[-analyzer.WINDOW:].tolist()
-    prediction = analyzer.predict_next_cluster(demo_input)
+    # Example prediction with most recent streak data
+    # The predict_next_cluster method now handles extracting recent streaks if None is provided
+    prediction = analyzer.predict_next_cluster()
 
     # Display prediction
     print_panel(
         f"Example prediction for next streak length cluster: {prediction}",
-        title="Prediction Result",
+        title="Streak-Based Prediction Result",
         style="blue"
     )
 
-    print_success("Analysis complete!")
+    print_success("Streak-based analysis complete!")
 
 
 if __name__ == "__main__":
