@@ -370,6 +370,14 @@ def make_feature_vector(last_streaks: List[Dict], window: int, feature_cols: Lis
     Returns:
         Series with feature values
     """
+    # Validate inputs
+    if feature_cols is None or len(feature_cols) == 0:
+        logger.error("No feature columns provided to make_feature_vector")
+        return None
+
+    logger.info(
+        f"Creating feature vector with {len(last_streaks)} streaks and {len(feature_cols)} feature columns")
+
     # Convert list of streak dicts to DataFrame
     streak_df = pd.DataFrame(last_streaks)
 
@@ -379,21 +387,71 @@ def make_feature_vector(last_streaks: List[Dict], window: int, feature_cols: Lis
             "No streaks provided for feature creation. Using zeros.")
         return pd.Series(0.0, index=feature_cols)
 
+    # Log streaks info
+    if 'streak_length' in streak_df.columns:
+        logger.info(f"Streak lengths: min={streak_df['streak_length'].min()}, "
+                    f"max={streak_df['streak_length'].max()}, "
+                    f"mean={streak_df['streak_length'].mean():.2f}")
+
+    # Check for required columns
+    required_cols = ['streak_length', 'mean_multiplier',
+                     'max_multiplier', 'min_multiplier']
+    missing_cols = [
+        col for col in required_cols if col not in streak_df.columns]
+    if missing_cols:
+        logger.warning(f"Missing columns in streak data: {missing_cols}")
+
     # Create the same features as in training, but in prediction mode to keep rows even with missing lags
     features_df = create_streak_features(
         streak_df, lookback_window=window, prediction_mode=True)
 
+    logger.info(f"Feature DataFrame shape: {features_df.shape}")
+
     # Get the last row which contains features for the most recent streaks
     if not features_df.empty:
         last_features = features_df.iloc[-1]
+        logger.info(f"Created {len(last_features)} features for last streak")
 
         # Create aligned feature vector with expected column names
         aligned_features = pd.Series(0.0, index=feature_cols)
 
         # Update values where features exist in both
+        matched_features = []
         for col in feature_cols:
             if col in last_features:
-                aligned_features[col] = last_features[col]
+                try:
+                    # Extract scalar value if needed
+                    val = last_features[col]
+                    # Check if value is array-like and extract first element if needed
+                    if hasattr(val, '__len__') and not isinstance(val, (str, bytes)):
+                        logger.warning(
+                            f"Feature '{col}' has sequence value, extracting first element")
+                        if len(val) > 0:
+                            aligned_features[col] = float(val[0])
+                        else:
+                            aligned_features[col] = 0.0
+                    else:
+                        # Handle scalar values
+                        aligned_features[col] = float(val)
+                    matched_features.append(col)
+                except Exception as e:
+                    logger.warning(
+                        f"Could not convert feature '{col}' to float: {e}, using 0.0")
+                    aligned_features[col] = 0.0
+
+        # Log alignment statistics
+        match_rate = len(matched_features) / len(feature_cols) * 100
+        logger.info(
+            f"Feature alignment: {len(matched_features)}/{len(feature_cols)} features matched ({match_rate:.1f}%)")
+
+        # Log some key features if available
+        key_features = ['mean_multiplier', 'max_multiplier', 'min_multiplier', 'pct_gt5', 'pct_gt2',
+                        'rolling_mean_streak_length', 'rolling_std_streak_length']
+        matched_key_features = [
+            f for f in key_features if f in matched_features]
+        if matched_key_features:
+            logger.info(
+                f"Key matched features: {', '.join(f'{f}={aligned_features[f]:.4f}' for f in matched_key_features)}")
 
         return aligned_features
     else:

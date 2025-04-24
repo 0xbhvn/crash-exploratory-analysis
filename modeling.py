@@ -141,9 +141,11 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
         subsample=0.8,
         colsample_bytree=0.8,
         eval_metric="mlogloss",
-        seed=random_seed,
-        lookback=window  # Store lookback window size for cross-validation
+        seed=random_seed
     )
+
+    # Store lookback window size in model bundle for later use, but don't pass to XGBoost
+    lookback_window = window
 
     # Display model parameters
     param_table = create_table("XGBoost Parameters", ["Parameter", "Value"])
@@ -175,7 +177,7 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
 
     # Perform CV using a sample of data for each fold
     n_train = len(X_train)
-    for fold, (tr_idx, val_idx) in enumerate(rolling_origin_indices(n_train, eval_folds, gap=params.get('lookback', 50)), 1):
+    for fold, (tr_idx, val_idx) in enumerate(rolling_origin_indices(n_train, eval_folds, gap=lookback_window), 1):
 
         # Ensure validation set is not too large
         if len(val_idx) > 5000:
@@ -224,7 +226,7 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
         "feature_cols": feature_cols,
         "percentiles": percentiles,
         "percentile_values": [df['target_streak_length'].quantile(p) for p in percentiles],
-        "window": window,
+        "window": lookback_window,
         "baseline_probs": baseline_probs,
         "p_hat": p_hat
     }
@@ -579,13 +581,17 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
     # Load model if path is provided
     model_bundle = None
     if isinstance(model_or_path, str):
+        print_info(f"Loading model from file: {model_or_path}")
         model_bundle = joblib.load(model_or_path)
         model = model_bundle.get("model")
         saved_feature_cols = model_bundle.get("feature_cols")
         if saved_feature_cols:
+            print_info(
+                f"Loaded feature columns from model bundle: {len(saved_feature_cols)} features")
             feature_cols = saved_feature_cols
     else:
         model = model_or_path  # Already a model object
+        print_info("Using provided model object directly")
 
     # Handle empty streaks gracefully
     if not last_streaks:
@@ -600,12 +606,61 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
         print_warning(
             f"Expected at least {window} streaks, but got {len(last_streaks)}. Results may be less accurate.")
 
+    # Display detailed information about streaks used for prediction
+    streaks_table = create_table("Input Streaks for Prediction",
+                                 ["Streak #", "Game ID Range", "Length", "Hit Multiplier"])
+
+    # Display streaks in reverse order (most recent first)
+    for i, streak in enumerate(reversed(last_streaks[:window])):
+        if 'streak_number' in streak and 'start_game_id' in streak and 'end_game_id' in streak:
+            streak_num = streak.get('streak_number', 'N/A')
+            start_id = streak.get('start_game_id', 'N/A')
+            end_id = streak.get('end_game_id', 'N/A')
+            length = streak.get('streak_length', 'N/A')
+            hit_mult = streak.get('hit_multiplier', 'N/A')
+
+            # Format as "Streak #123 (most recent)" for the most recent streak
+            streak_label = f"Streak #{streak_num}"
+            if i == 0:
+                streak_label += " (most recent)"
+
+            game_range = f"{start_id} → {end_id}"
+
+            add_table_row(streaks_table, [
+                streak_label,
+                game_range,
+                length,
+                f"{hit_mult:.2f}" if isinstance(
+                    hit_mult, (int, float)) else hit_mult
+            ])
+
+    # If we have a next streak id, show prediction target
+    next_streak_id = None
+    if len(last_streaks) > 0 and 'streak_number' in last_streaks[-1]:
+        next_streak_id = last_streaks[-1]['streak_number'] + 1
+        add_table_row(streaks_table, [
+            f"Streak #{next_streak_id} (predicted)",
+            "? → ?",
+            "?",
+            "?"
+        ])
+
+    display_table(streaks_table)
+
     try:
         # Create DataFrame from streaks
         streak_df = pd.DataFrame(last_streaks)
-
-        # Create features using prediction mode to avoid dropping rows with insufficient history
         print_info(f"Creating features from {len(streak_df)} streaks")
+
+        # Log key information about streaks
+        if 'streak_length' in streak_df.columns:
+            print_info(f"Streak lengths: min={streak_df['streak_length'].min()}, "
+                       f"max={streak_df['streak_length'].max()}, "
+                       f"mean={streak_df['streak_length'].mean():.2f}")
+
+        if not set(['mean_multiplier', 'max_multiplier', 'min_multiplier', 'streak_length']).issubset(streak_df.columns):
+            print_warning(
+                f"Missing expected columns in streak DataFrame. Available columns: {streak_df.columns.tolist()}")
 
         # For prediction, use the create_streak_features with prediction_mode=True
         from data_processing import create_streak_features
@@ -617,6 +672,12 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
             last_features = features_df.iloc[-1]
             print_info(
                 f"Successfully created features from streak data with {len(features_df.columns)} columns")
+
+            # Log key feature information
+            if set(['mean_multiplier', 'max_multiplier', 'min_multiplier']).issubset(features_df.columns):
+                print_info(f"Key features for last row: mean_mult={last_features['mean_multiplier']:.4f}, "
+                           f"max_mult={last_features['max_multiplier']:.4f}, "
+                           f"min_mult={last_features['min_multiplier']:.4f}")
         else:
             raise ValueError("Empty features DataFrame created")
 
@@ -626,32 +687,96 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
             aligned_features = pd.Series(0.0, index=feature_cols)
 
             # Update values where features exist
+            feature_matches = 0
             for col in feature_cols:
                 if col in last_features:
-                    aligned_features[col] = last_features[col]
+                    # Extract scalar value to avoid "setting an array element with a sequence" error
+                    try:
+                        val = last_features[col]
+                        # Check if value is array-like and extract first element if needed
+                        if hasattr(val, '__len__') and not isinstance(val, (str, bytes)):
+                            print_warning(
+                                f"Feature '{col}' has sequence value: {val}, extracting first element")
+                            if len(val) > 0:
+                                aligned_features[col] = float(val[0])
+                            else:
+                                aligned_features[col] = 0.0
+                        else:
+                            # Handle scalar values
+                            aligned_features[col] = float(val)
+                        feature_matches += 1
+                    except Exception as e:
+                        print_warning(
+                            f"Could not convert feature '{col}' to float: {e}, using 0.0")
+                        aligned_features[col] = 0.0
+
+            # Log feature alignment statistics
+            print_info(f"Feature alignment: {feature_matches}/{len(feature_cols)} features matched "
+                       f"({feature_matches/len(feature_cols)*100:.1f}%)")
 
             feat_vec = aligned_features
         else:
             # Fallback if no feature columns provided
+            print_warning(
+                "No feature columns provided. Using all features from DataFrame.")
             feat_vec = last_features
 
         # Check for missing values
-        if feat_vec.isna().any():
+        missing_count = feat_vec.isna().sum()
+        if missing_count > 0:
             print_warning(
-                "Found missing values in feature vector. Filling with zeros.")
+                f"Found {missing_count} missing values in feature vector. Filling with zeros.")
             feat_vec = feat_vec.fillna(0)
 
-        # Make prediction
-        dpredict = xgb.DMatrix(feat_vec.values.reshape(
-            1, -1), feature_names=feature_cols)
-        probs = model.predict(dpredict)[0]
+        # Ensure vec is a numpy array of the right dimension
+        feat_array = feat_vec.values
+        print_info(
+            f"Feature vector shape: {feat_array.shape}, dtype: {feat_array.dtype}")
+
+        # Reshape properly for XGBoost
+        feat_array = feat_array.reshape(1, -1)
+        print_info(f"Reshaped feature array: {feat_array.shape}")
+
+        # Make prediction with aligned features - handle feature names carefully
+        try:
+            # Check if feature names match array dimension
+            if len(feature_cols) != feat_array.shape[1]:
+                print_warning(
+                    f"Feature names length ({len(feature_cols)}) doesn't match array width ({feat_array.shape[1]})")
+                print_warning(
+                    "Creating DMatrix without feature names to avoid dimension mismatch")
+                dpredict = xgb.DMatrix(feat_array)
+            else:
+                print_info(
+                    f"Creating DMatrix with feature_names parameter (length={len(feature_cols)})")
+                dpredict = xgb.DMatrix(feat_array, feature_names=feature_cols)
+
+            probs = model.predict(dpredict)[0]
+            print_info(f"Raw prediction probabilities: {probs}")
+        except Exception as e:
+            print_error(
+                f"Error creating DMatrix or making prediction: {str(e)}")
+            # Try fallback approach
+            try:
+                print_warning(
+                    "Trying fallback prediction without feature names")
+                dpredict = xgb.DMatrix(feat_array)
+                probs = model.predict(dpredict)[0]
+                print_info(f"Fallback prediction successful: {probs}")
+            except Exception as e2:
+                print_error(f"Fallback prediction also failed: {str(e2)}")
+                # Return uniform distribution
+                num_classes = len(percentiles) + 1
+                return {str(i): 1.0 / num_classes for i in range(num_classes)}
 
         # Format results
         result = {str(i): float(p) for i, p in enumerate(probs)}
 
     except Exception as e:
         # Handle prediction errors gracefully
+        import traceback
         print_error(f"Error during prediction: {str(e)}")
+        print_error(f"Error details: {traceback.format_exc()}")
 
         # Return uniform distribution
         num_classes = len(percentiles) + 1
@@ -669,6 +794,10 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
         "Mean Multiplier": f"{np.mean(streak_means):.2f}" if streak_means else "N/A",
         "Last Streak Length": f"{streak_lengths[-1]:.0f}" if streak_lengths else "N/A"
     }
+
+    if next_streak_id:
+        input_stats["Predicting For"] = f"Streak #{next_streak_id}"
+
     create_stats_table("Input Streak Summary", input_stats)
 
     return result

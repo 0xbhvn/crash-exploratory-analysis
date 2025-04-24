@@ -153,8 +153,13 @@ class CrashStreakAnalyzer:
         """
         print_info(
             f"Analyzing streak lengths including {self.MULTIPLIER_THRESHOLD}× multipliers")
-        streak_lengths = data_processing.analyze_streaks(
+
+        # Extract complete streak information including game IDs
+        streak_df = data_processing.extract_streaks_and_multipliers(
             self.df, self.MULTIPLIER_THRESHOLD)
+
+        # Get the streak lengths from the detailed streak data
+        streak_lengths = streak_df['streak_length'].tolist()
 
         # Calculate percentiles
         percentiles = data_processing.calculate_streak_percentiles(
@@ -184,12 +189,35 @@ class CrashStreakAnalyzer:
 
         display_table(freq_table)
 
-        # Save streak lengths if requested
+        # Save detailed streak information if requested
         if save_streak_lengths:
+            # Extract relevant columns for the output
+            streak_output = streak_df[['streak_number', 'start_game_id',
+                                       'end_game_id', 'streak_length', 'hit_multiplier']].copy()
+
+            # Save to CSV
             streak_file = os.path.join(self.output_dir, "streak_lengths.csv")
-            pd.Series(streak_lengths, name="streak_length").to_csv(
-                streak_file, index=False)
-            print_info(f"Saved streak lengths to {streak_file}")
+            streak_output.to_csv(streak_file, index=False)
+            print_info(f"Saved detailed streak information to {streak_file}")
+
+            # Display sample of the saved data
+            sample_table = create_table("Streak Data Sample",
+                                        ["Streak ID", "Start Game ID", "End Game ID", "Length", "Hit Multiplier"])
+
+            # Show first 5 streaks
+            for _, row in streak_output.head(5).iterrows():
+                add_table_row(sample_table, [
+                    int(row['streak_number']),
+                    int(row['start_game_id']),
+                    int(row['end_game_id']),
+                    int(row['streak_length']),
+                    f"{row['hit_multiplier']:.2f}"
+                ])
+
+            display_table(sample_table)
+
+        # Store the streak dataframe for later use
+        self.streak_df = streak_df
 
         return streak_lengths
 
@@ -381,6 +409,17 @@ class CrashStreakAnalyzer:
                     self.WINDOW).to_dict('records')
                 print_info(
                     f"Using the last {len(recent_streaks)} streaks from existing streak dataframe for prediction")
+
+                # Display streak range information
+                if len(recent_streaks) > 0:
+                    first_streak = recent_streaks[0]
+                    last_streak = recent_streaks[-1]
+                    if 'streak_number' in first_streak and 'streak_number' in last_streak:
+                        streak_range = f"Streaks #{first_streak['streak_number']} → #{last_streak['streak_number']}"
+                        print_info(f"Streak range: {streak_range}")
+                    if 'start_game_id' in first_streak and 'end_game_id' in last_streak:
+                        game_range = f"Games #{first_streak['start_game_id']} → #{last_streak['end_game_id']}"
+                        print_info(f"Game ID range: {game_range}")
             else:
                 # Extract streaks from raw data if needed
                 from data_processing import extract_streaks_and_multipliers
@@ -440,8 +479,9 @@ class CrashStreakAnalyzer:
                 percentiles=self.PERCENTILES
             )
         except Exception as e:
+            import traceback
             print_error(f"Prediction error: {str(e)}")
-            print_error("Traceback: ", exc_info=True)
+            print_error(f"Detailed traceback:\n{traceback.format_exc()}")
             # Fall back to uniform distribution
             results = {
                 str(i): 1.0 / self.NUM_CLUSTERS for i in range(self.NUM_CLUSTERS)}
@@ -477,6 +517,27 @@ class CrashStreakAnalyzer:
                           cluster, description, f"{float(prob) * 100:.2f}%"])
 
         display_table(prediction_table)
+
+        # Determine the most likely streak length range based on highest probability
+        if sorted_results:
+            most_likely_cluster = sorted_results[0][0]
+            most_likely_desc = cluster_descriptions.get(
+                most_likely_cluster, "Unknown")
+            most_likely_prob = sorted_results[0][1] * 100
+
+            # Create a rich panel with prediction summary
+            prediction_summary = (
+                f"Most likely outcome: {most_likely_desc} ({most_likely_prob:.1f}% probability)\n"
+                f"Full probabilities: {results}\n"
+            )
+
+            # Add next streak number if available
+            if recent_streaks and 'streak_number' in recent_streaks[-1]:
+                next_streak_num = recent_streaks[-1]['streak_number'] + 1
+                prediction_summary += f"Predicting for: Streak #{next_streak_num}"
+
+            print_panel(prediction_summary,
+                        title="Streak-Based Prediction Result", style="green")
 
         return results
 
