@@ -1,0 +1,47 @@
+---
+title: "Action Plan: Fix Model Feature Scaling Mismatch"
+description: "This plan addresses the issue where the model performs well on test data but poorly on live data due to differences in how feature scaling is applied."
+
+todos:
+  - task: "Fix StandardScaler persistence issues"
+    description: "Ensure scaler is properly saved and loaded with model for consistent predictions"
+    subtasks:
+      - "Modify modeling.py to save StandardScaler together with the model"
+      - "Update predict_next_cluster function to use the saved scaler"
+      - "Add robustness checks to handle cases where scaler might be missing"
+      - "Create test function to verify prediction consistency between train and serve time"
+  
+  - task: "Improve model bundling mechanism"
+    description: "Create a comprehensive model bundle with all necessary components for prediction"
+    subtasks:
+      - "Create a ModelBundle class/dictionary with model, scaler, feature_cols, and metadata"
+      - "Update train_model function to return this bundle"
+      - "Adapt predict_next_cluster to use all components from the bundle"
+      - "Add version information to bundle for future compatibility"
+  
+  - task: "Enhance feature preprocessing"
+    description: "Ensure feature creation is identical in training and prediction workflows"
+    subtasks:
+      - "Refactor feature engineering code to use the same function for both training and prediction"
+      - "Add logging for feature statistics during training"
+      - "Add validation steps to compare feature distributions between training and prediction"
+      - "Implement feature value range checks with warnings for out-of-distribution values"
+  
+  - task: "Add robust error handling"
+    description: "Improve error handling for prediction failures with fallback mechanisms"
+    subtasks: 
+      - "Add try/except blocks around scaling operations"
+      - "Implement fallback to unscaled prediction if scaling fails"
+      - "Create a feature validation step before prediction"
+      - "Add detailed logging for prediction errors"
+  
+  - task: "Update documentation"
+    description: "Document the prediction pipeline and requirements for consistency"
+    subtasks:
+      - "Create a flowchart of the prediction process"
+      - "Document the model bundle format"
+      - "Add docstrings explaining the scaling requirements"
+      - "Update README with model persistence information"
+
+done:
+  # This section will be populated as tasks are completed
