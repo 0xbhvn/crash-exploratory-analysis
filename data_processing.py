@@ -268,7 +268,7 @@ def prepare_features(df: pd.DataFrame,
                      window: int,
                      multiplier_threshold: float = 10.0,
                      percentiles: List[float] = [0.25, 0.50, 0.75]
-                     ) -> Tuple[pd.DataFrame, List[str]]:
+                     ) -> Tuple[pd.DataFrame, List[str], StandardScaler]:
     """
     Prepare features for machine learning model training.
 
@@ -282,7 +282,7 @@ def prepare_features(df: pd.DataFrame,
         percentiles: List of percentile boundaries for clustering
 
     Returns:
-        Tuple of (DataFrame with features, list of feature column names)
+        Tuple of (DataFrame with features, list of feature column names, fitted StandardScaler)
     """
     logger.info(f"Preparing streak-based features with lookback={window}")
 
@@ -354,8 +354,9 @@ def prepare_features(df: pd.DataFrame,
         f"Percentile-based cluster counts: {', '.join(cluster_counts)}")
     logger.info(
         f"Final feature matrix shape: {features_df[feature_cols].shape}")
+    logger.info(f"StandardScaler mean and scale computed for {len(feature_cols)} features")
 
-    return features_df, feature_cols
+    return features_df, feature_cols, scaler
 
 
 def make_feature_vector(last_streaks: List[Dict], window: int, feature_cols: List[str]) -> pd.Series:

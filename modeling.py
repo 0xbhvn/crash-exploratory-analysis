@@ -30,7 +30,8 @@ logger = logging.getLogger(__name__)
 def train_model(df: pd.DataFrame, feature_cols: List[str],
                 test_frac: float, random_seed: int, eval_folds: int = 5,
                 output_dir: str = './output', multiplier_threshold: float = 10.0,
-                percentiles: List[float] = [0.25, 0.50, 0.75], window: int = 50) -> Tuple[xgb.Booster, Dict[str, float], float]:
+                percentiles: List[float] = [0.25, 0.50, 0.75], window: int = 50,
+                scaler = None) -> Dict[str, Any]:
     """
     Train an XGBoost model for streak length prediction.
 
@@ -44,9 +45,10 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
         multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
         percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
         window: Lookback window size for cross-validation
+        scaler: Fitted StandardScaler object for feature normalization
 
     Returns:
-        Tuple of (trained model, baseline probabilities, empirical hit rate)
+        Model bundle dictionary containing trained model, scaler, and metadata
     """
     logger.info("Training XGBoost model for streak length prediction")
 
@@ -219,8 +221,25 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
     print_info("Training final model on all streak training data")
     bst_final = xgb.train(params, dtrain_full, num_boost_round=nrounds)
 
-    # Save the model
+    # Save the model with scaler
     model_path = os.path.join(output_dir, "xgboost_model.pkl")
+    
+    # Check if we have a scaler
+    if scaler is None:
+        print_warning("No scaler provided! Model predictions may be inconsistent.")
+        print_warning("Creating a new scaler to capture feature distributions...")
+        from sklearn.preprocessing import StandardScaler
+        scaler = StandardScaler()
+        # Fit scaler on the features we have (not ideal, but better than nothing)
+        scaler.fit(df[feature_cols])
+    
+    # Log scaler information
+    if hasattr(scaler, 'mean_') and hasattr(scaler, 'scale_'):
+        print_info(f"StandardScaler included in model bundle with {len(scaler.mean_)} features")
+        print_info(f"Feature scaling mean range: [{scaler.mean_.min():.4f}, {scaler.mean_.max():.4f}]")
+        print_info(f"Feature scaling std range: [{scaler.scale_.min():.4f}, {scaler.scale_.max():.4f}]")
+    
+    # Create a comprehensive model bundle
     model_bundle = {
         "model": bst_final,
         "feature_cols": feature_cols,
@@ -228,10 +247,13 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
         "percentile_values": [df['target_streak_length'].quantile(p) for p in percentiles],
         "window": lookback_window,
         "baseline_probs": baseline_probs,
-        "p_hat": p_hat
+        "p_hat": p_hat,
+        "scaler": scaler,
+        "version": "1.1.0",  # Add version for compatibility checks
+        "multiplier_threshold": multiplier_threshold
     }
     joblib.dump(model_bundle, model_path)
-    print_success(f"Saved streak-based model to {model_path}")
+    print_success(f"Saved streak-based model bundle to {model_path} (including scaler)")
 
     # Test-set evaluation
     dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_cols)
@@ -561,7 +583,8 @@ def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir,
 
 def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
                          feature_cols: List[str] = None, multiplier_threshold: float = 10.0,
-                         percentiles: List[float] = [0.25, 0.50, 0.75]) -> Dict[str, float]:
+                         percentiles: List[float] = [0.25, 0.50, 0.75],
+                         scaler = None) -> Dict[str, float]:
     """
     Predict the next streak length cluster based on recent streak patterns.
 
@@ -572,6 +595,7 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
         feature_cols: List of feature column names (if not included in model bundle)
         multiplier_threshold: Threshold for considering a multiplier as a hit (default: 10.0)
         percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
+        scaler: StandardScaler for feature normalization (if not included in model bundle)
 
     Returns:
         Dictionary of cluster probabilities
@@ -582,16 +606,49 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
     model_bundle = None
     if isinstance(model_or_path, str):
         print_info(f"Loading model from file: {model_or_path}")
-        model_bundle = joblib.load(model_or_path)
-        model = model_bundle.get("model")
-        saved_feature_cols = model_bundle.get("feature_cols")
-        if saved_feature_cols:
-            print_info(
-                f"Loaded feature columns from model bundle: {len(saved_feature_cols)} features")
-            feature_cols = saved_feature_cols
+        try:
+            model_bundle = joblib.load(model_or_path)
+            model = model_bundle.get("model")
+            
+            # Get saved feature columns from bundle
+            saved_feature_cols = model_bundle.get("feature_cols")
+            if saved_feature_cols:
+                print_info(f"Loaded feature columns from model bundle: {len(saved_feature_cols)} features")
+                feature_cols = saved_feature_cols
+                
+            # Get saved scaler from bundle if not provided
+            if scaler is None and "scaler" in model_bundle:
+                scaler = model_bundle.get("scaler")
+                print_info("Using scaler from model bundle for feature normalization")
+                if hasattr(scaler, 'mean_'):
+                    print_info(f"Scaler has {len(scaler.mean_)} features")
+            
+            # Log bundle version information
+            if "version" in model_bundle:
+                print_info(f"Model bundle version: {model_bundle.get('version')}")
+        except Exception as e:
+            print_error(f"Error loading model: {str(e)}")
+            print_warning("Attempting to proceed with fallback approach...")
+            # Try simple load as a fallback
+            try:
+                model = joblib.load(model_or_path)
+            except Exception as e2:
+                print_error(f"Fallback load also failed: {str(e2)}")
+                raise ValueError(f"Could not load model from {model_or_path}")
     else:
         model = model_or_path  # Already a model object
         print_info("Using provided model object directly")
+        
+        # Check if it's actually a bundle
+        if isinstance(model, dict) and "model" in model:
+            print_info("Model object appears to be a bundle, extracting components...")
+            if "scaler" in model and scaler is None:
+                scaler = model.get("scaler")
+                print_info("Using scaler from model bundle")
+            if "feature_cols" in model and feature_cols is None:
+                feature_cols = model.get("feature_cols")
+                print_info(f"Using {len(feature_cols)} feature columns from model bundle")
+            model = model.get("model")
 
     # Handle empty streaks gracefully
     if not last_streaks:
@@ -727,15 +784,32 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
             print_warning(
                 f"Found {missing_count} missing values in feature vector. Filling with zeros.")
             feat_vec = feat_vec.fillna(0)
-
-        # Ensure vec is a numpy array of the right dimension
-        feat_array = feat_vec.values
-        print_info(
-            f"Feature vector shape: {feat_array.shape}, dtype: {feat_array.dtype}")
-
-        # Reshape properly for XGBoost
-        feat_array = feat_array.reshape(1, -1)
-        print_info(f"Reshaped feature array: {feat_array.shape}")
+                
+        # Apply scaling if we have a scaler
+        if scaler is not None:
+            try:
+                print_info("Applying feature scaling with StandardScaler")
+                # We need to make a copy to avoid a warning about modifying the input
+                feat_array = feat_vec.values.copy().reshape(1, -1)
+                # Apply transform (not fit_transform!)
+                feat_array = scaler.transform(feat_array)
+                print_info("Successfully applied feature scaling")
+                
+                # Log scaling stats
+                if hasattr(scaler, 'mean_'):
+                    print_info(f"Scaler features: {len(scaler.mean_)}, Input features: {len(feat_vec)}")
+                    
+            except Exception as e:
+                print_error(f"Error applying scaler: {str(e)}")
+                print_warning("Continuing with unscaled features as fallback!")
+                feat_array = feat_vec.values.reshape(1, -1)
+        else:
+            print_warning("No scaler provided! Using unscaled features.")
+            # Ensure vec is a numpy array of the right dimension
+            feat_array = feat_vec.values
+            feat_array = feat_array.reshape(1, -1)
+                
+        print_info(f"Feature vector shape: {feat_array.shape}, dtype: {feat_array.dtype}")
 
         # Make prediction with aligned features - handle feature names carefully
         try:

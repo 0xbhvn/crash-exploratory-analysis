@@ -76,6 +76,7 @@ class CrashStreakAnalyzer:
         self.p_hat = None
         self.baseline_probs = None
         self.percentile_values = None
+        self.scaler = None
 
         # Display initialization info in a panel
         config_info = (
@@ -245,7 +246,7 @@ class CrashStreakAnalyzer:
         print_info("Preparing streak-based features for machine learning")
 
         # The window parameter is now used as a lookback window of previous streaks rather than games
-        self.df, self.feature_cols = data_processing.prepare_features(
+        self.df, self.feature_cols, self.scaler = data_processing.prepare_features(
             self.df, self.WINDOW,
             multiplier_threshold=self.MULTIPLIER_THRESHOLD,
             percentiles=self.PERCENTILES)
@@ -320,7 +321,8 @@ class CrashStreakAnalyzer:
             self.TEST_FRAC, self.RANDOM_SEED, eval_folds,
             self.output_dir, self.MULTIPLIER_THRESHOLD,
             percentiles=self.PERCENTILES,
-            window=self.WINDOW
+            window=self.WINDOW,
+            scaler=self.scaler
         )
 
         # model_results can be either a tuple of (model, baseline_probs, p_hat)
@@ -476,7 +478,8 @@ class CrashStreakAnalyzer:
             results = modeling.predict_next_cluster(
                 model, recent_streaks,
                 self.WINDOW, feature_cols, self.MULTIPLIER_THRESHOLD,
-                percentiles=self.PERCENTILES
+                percentiles=self.PERCENTILES,
+                scaler=self.scaler  # Pass the scaler for consistent scaling
             )
         except Exception as e:
             import traceback
