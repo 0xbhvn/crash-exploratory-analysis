@@ -354,9 +354,176 @@ def prepare_features(df: pd.DataFrame,
         f"Percentile-based cluster counts: {', '.join(cluster_counts)}")
     logger.info(
         f"Final feature matrix shape: {features_df[feature_cols].shape}")
-    logger.info(f"StandardScaler mean and scale computed for {len(feature_cols)} features")
+    logger.info(
+        f"StandardScaler mean and scale computed for {len(feature_cols)} features")
 
     return features_df, feature_cols, scaler
+
+
+def prepare_train_test_features(df: pd.DataFrame,
+                                window: int,
+                                test_frac: float,
+                                random_seed: int = 42,
+                                multiplier_threshold: float = 10.0,
+                                percentiles: List[float] = [0.25, 0.50, 0.75]
+                                ) -> Tuple[pd.DataFrame, pd.DataFrame, List[str], StandardScaler]:
+    """
+    Prepare features for machine learning with proper train-test split to prevent data leakage.
+
+    This function first extracts streaks from raw game data, then splits the streaks into
+    training and testing sets, and finally applies feature engineering to each set separately.
+
+    Args:
+        df: DataFrame with game data (Game ID, Bust)
+        window: Number of previous streaks to consider for lookback features
+        test_frac: Fraction of data to use for testing
+        random_seed: Random seed for reproducibility
+        multiplier_threshold: Threshold for considering a multiplier as a hit
+        percentiles: List of percentile boundaries for clustering
+
+    Returns:
+        Tuple of (train DataFrame with features, test DataFrame with features, 
+                 list of feature column names, fitted StandardScaler)
+    """
+    logger.info(
+        f"Preparing train-test features with lookback={window} and test_frac={test_frac}")
+
+    # Step 1: Extract all streaks from raw game data
+    streak_df = extract_streaks_and_multipliers(df, multiplier_threshold)
+
+    # Step 2: Split streaks into train and test sets BEFORE creating features
+    # Sort by streak_number to ensure temporal order
+    streak_df = streak_df.sort_values('streak_number')
+
+    # Use sequential split by index to ensure we don't break streak continuity
+    split_idx = int(len(streak_df) * (1 - test_frac))
+    train_streak_df = streak_df.iloc[:split_idx].copy()
+    test_streak_df = streak_df.iloc[split_idx:].copy()
+
+    # Show split information
+    split_info = {
+        "Training Streaks": len(train_streak_df),
+        "Testing Streaks": len(test_streak_df),
+        "Training Split": f"{(1-test_frac)*100:.1f}%",
+        "Testing Split": f"{test_frac*100:.1f}%"
+    }
+    create_stats_table("Streak Train/Test Split", split_info)
+
+    # Step 3: Create features for training data
+    logger.info("Creating features for training data...")
+    train_features_df = create_streak_features(
+        train_streak_df, lookback_window=window)
+
+    # Identify the feature columns (exclude target and metadata columns)
+    metadata_cols = ['streak_number', 'start_game_id', 'end_game_id',
+                     'streak_length', 'hit_multiplier', 'target_streak_length']
+    # Also exclude the multiplier_X columns
+    multiplier_cols = [
+        col for col in train_features_df.columns if col.startswith('multiplier_')]
+
+    feature_cols = [col for col in train_features_df.columns
+                    if col not in metadata_cols and col not in multiplier_cols]
+
+    # Step 4: Calculate streak length percentiles from training data only
+    train_features_df.loc[:,
+                          'target_streak_length'] = train_features_df['streak_length']
+    percentile_values = [
+        train_features_df['target_streak_length'].quantile(p) for p in percentiles]
+
+    # Log percentile boundaries
+    percentile_info = ", ".join(
+        [f"P{int(p*100)}={val:.1f}" for p, val in zip(percentiles, percentile_values)])
+    logger.info(
+        f"Streak length percentile boundaries from training data: {percentile_info}")
+
+    # Step 5: Apply clustering to training data based on percentiles
+    # Create conditions and results for clustering
+    conditions = []
+    results = []
+
+    for i in range(len(percentiles) + 1):
+        if i == 0:
+            # First cluster: <= first percentile
+            conditions.append(
+                train_features_df['target_streak_length'] <= percentile_values[0])
+        elif i == len(percentiles):
+            # Last cluster: > last percentile
+            conditions.append(
+                train_features_df['target_streak_length'] > percentile_values[-1])
+        else:
+            # Middle clusters: between adjacent percentiles
+            conditions.append(
+                (train_features_df['target_streak_length'] > percentile_values[i-1]) &
+                (train_features_df['target_streak_length']
+                 <= percentile_values[i])
+            )
+        results.append(i)
+
+    # Create clusters
+    train_features_df = train_features_df.copy()  # Avoid fragmentation
+    train_features_df.loc[:, 'target_cluster'] = np.select(
+        conditions, results, default=np.nan)
+
+    # Step 6: Feature scaling - fit on training data only
+    scaler = StandardScaler()
+    train_features_df.loc[:, feature_cols] = scaler.fit_transform(
+        train_features_df[feature_cols])
+
+    # Step 7: Create features for test data separately
+    logger.info("Creating features for test data...")
+    test_features_df = create_streak_features(
+        test_streak_df, lookback_window=window)
+
+    # Add target streak length to test data
+    test_features_df.loc[:,
+                         'target_streak_length'] = test_features_df['streak_length']
+
+    # Step 8: Apply the same clustering logic to test data
+    conditions = []
+    results = []
+
+    for i in range(len(percentiles) + 1):
+        if i == 0:
+            conditions.append(
+                test_features_df['target_streak_length'] <= percentile_values[0])
+        elif i == len(percentiles):
+            conditions.append(
+                test_features_df['target_streak_length'] > percentile_values[-1])
+        else:
+            conditions.append(
+                (test_features_df['target_streak_length'] > percentile_values[i-1]) &
+                (test_features_df['target_streak_length']
+                 <= percentile_values[i])
+            )
+        results.append(i)
+
+    test_features_df = test_features_df.copy()
+    test_features_df.loc[:, 'target_cluster'] = np.select(
+        conditions, results, default=np.nan)
+
+    # Step 9: Apply the same scaling to test data using the scaler fit on training data
+    test_features_df.loc[:, feature_cols] = scaler.transform(
+        test_features_df[feature_cols])
+
+    # Log cluster counts for both sets
+    clusters = list(range(len(percentiles) + 1))
+
+    train_cluster_counts = []
+    for i in clusters:
+        count = (train_features_df['target_cluster'] == i).sum()
+        percentage = count / len(train_features_df) * 100
+        train_cluster_counts.append(f"{i}: {count} ({percentage:.1f}%)")
+
+    test_cluster_counts = []
+    for i in clusters:
+        count = (test_features_df['target_cluster'] == i).sum()
+        percentage = count / len(test_features_df) * 100
+        test_cluster_counts.append(f"{i}: {count} ({percentage:.1f}%)")
+
+    logger.info(f"Training cluster counts: {', '.join(train_cluster_counts)}")
+    logger.info(f"Testing cluster counts: {', '.join(test_cluster_counts)}")
+
+    return train_features_df, test_features_df, feature_cols, scaler
 
 
 def make_feature_vector(last_streaks: List[Dict], window: int, feature_cols: List[str]) -> pd.Series:

@@ -63,6 +63,12 @@ def parse_arguments():
     parser.add_argument('--percentiles', default='0.25,0.50,0.75',
                         help='Comma-separated list of percentile boundaries for clustering (default: 0.25,0.50,0.75)')
 
+    # Add load_model argument
+    parser.add_argument('--load_model', action='store_true',
+                        help='Load existing model without retraining')
+    parser.add_argument('--model_path', default='./output/xgboost_model.pkl',
+                        help='Path to the saved model file (used with --load_model)')
+
     # Flags for database fetch
     parser.add_argument('--update_csv', action='store_true',
                         help='Update the CSV data from the database before analysis')
@@ -166,8 +172,32 @@ def main():
     # Prepare streak-based features
     analyzer.prepare_features()
 
-    # Train model
-    analyzer.train_model()
+    # Train model or load existing model
+    if args.load_model:
+        print_info(
+            f"Loading existing model from {args.model_path} without retraining")
+        try:
+            import joblib
+            analyzer.bst_final = joblib.load(args.model_path)
+            # Extract feature_cols and other necessary components if needed
+            if isinstance(analyzer.bst_final, dict) and "feature_cols" in analyzer.bst_final:
+                analyzer.feature_cols = analyzer.bst_final.get("feature_cols")
+                print_info(
+                    f"Loaded feature columns from model bundle: {len(analyzer.feature_cols)} features")
+            if isinstance(analyzer.bst_final, dict) and "scaler" in analyzer.bst_final:
+                analyzer.scaler = analyzer.bst_final.get("scaler")
+                print_info("Loaded scaler from model bundle")
+            if isinstance(analyzer.bst_final, dict) and "percentile_values" in analyzer.bst_final:
+                analyzer.percentile_values = analyzer.bst_final.get(
+                    "percentile_values")
+            print_success("Successfully loaded existing model")
+        except Exception as e:
+            print_error(f"Error loading model: {str(e)}")
+            print_error("Falling back to training a new model")
+            analyzer.train_model()
+    else:
+        # Train model
+        analyzer.train_model()
 
     # Example prediction with most recent streak data
     # The predict_next_cluster method now handles extracting recent streaks if None is provided

@@ -31,7 +31,7 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
                 test_frac: float, random_seed: int, eval_folds: int = 5,
                 output_dir: str = './output', multiplier_threshold: float = 10.0,
                 percentiles: List[float] = [0.25, 0.50, 0.75], window: int = 50,
-                scaler = None) -> Dict[str, Any]:
+                scaler=None) -> Dict[str, Any]:
     """
     Train an XGBoost model for streak length prediction.
 
@@ -52,27 +52,42 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
     """
     logger.info("Training XGBoost model for streak length prediction")
 
-    # Make a copy to avoid modifying original
-    df = df.copy()
+    # Import data_processing module to use the new function
+    from data_processing import prepare_train_test_features
 
-    # Time-ordered train/test split preserving streak continuity
-    # Use streak_number for ordering
-    if 'streak_number' in df.columns:
-        df = df.sort_values('streak_number')
+    # Check if df already has features or is raw game data
+    if "Game ID" in df.columns and "Bust" in df.columns:
+        # This is raw game data - we need to prepare features with proper train-test split
+        logger.info(
+            "Raw game data detected - preparing features with train-test split to prevent data leakage")
+        train_df, test_df, feature_cols, scaler = prepare_train_test_features(
+            df, window, test_frac, random_seed, multiplier_threshold, percentiles
+        )
+    else:
+        # This is pre-processed feature data (legacy support)
+        logger.warning(
+            "Using pre-processed feature data - this may have data leakage issues")
+        # Make a copy to avoid modifying original
+        df = df.copy()
 
-    # Use sequential split by index to ensure we don't break streak continuity
-    split_idx = int(len(df) * (1 - test_frac))
-    train_df = df.iloc[:split_idx].copy()
-    test_df = df.iloc[split_idx:].copy()
+        # Time-ordered train/test split preserving streak continuity
+        # Use streak_number for ordering
+        if 'streak_number' in df.columns:
+            df = df.sort_values('streak_number')
 
-    # Show split information
-    split_info = {
-        "Training Streaks": len(train_df),
-        "Testing Streaks": len(test_df),
-        "Training Split": f"{(1-test_frac)*100:.1f}%",
-        "Testing Split": f"{test_frac*100:.1f}%"
-    }
-    create_stats_table("Streak Train/Test Split", split_info)
+        # Use sequential split by index to ensure we don't break streak continuity
+        split_idx = int(len(df) * (1 - test_frac))
+        train_df = df.iloc[:split_idx].copy()
+        test_df = df.iloc[split_idx:].copy()
+
+        # Show split information
+        split_info = {
+            "Training Streaks": len(train_df),
+            "Testing Streaks": len(test_df),
+            "Training Split": f"{(1-test_frac)*100:.1f}%",
+            "Testing Split": f"{test_frac*100:.1f}%"
+        }
+        create_stats_table("Streak Train/Test Split", split_info)
 
     # Check for missing values in feature columns
     missing_values = train_df[feature_cols].isna().sum().sum()
@@ -107,7 +122,7 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
     cluster_descriptions = {}
     # Calculate the actual streak length values at each percentile
     percentile_values = [
-        df['target_streak_length'].quantile(p) for p in percentiles]
+        train_df['target_streak_length'].quantile(p) for p in percentiles]
 
     for i in range(len(percentiles) + 1):
         if i == 0:
@@ -223,178 +238,71 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
 
     # Save the model with scaler
     model_path = os.path.join(output_dir, "xgboost_model.pkl")
-    
+
     # Check if we have a scaler
     if scaler is None:
-        print_warning("No scaler provided! Model predictions may be inconsistent.")
-        print_warning("Creating a new scaler to capture feature distributions...")
+        print_warning(
+            "No scaler provided! Model predictions may be inconsistent.")
+        print_warning(
+            "Creating a new scaler to capture feature distributions...")
         from sklearn.preprocessing import StandardScaler
         scaler = StandardScaler()
         # Fit scaler on the features we have (not ideal, but better than nothing)
         scaler.fit(df[feature_cols])
-    
+
     # Log scaler information
     if hasattr(scaler, 'mean_') and hasattr(scaler, 'scale_'):
-        print_info(f"StandardScaler included in model bundle with {len(scaler.mean_)} features")
-        print_info(f"Feature scaling mean range: [{scaler.mean_.min():.4f}, {scaler.mean_.max():.4f}]")
-        print_info(f"Feature scaling std range: [{scaler.scale_.min():.4f}, {scaler.scale_.max():.4f}]")
-    
-    # Create a comprehensive model bundle
+        print_info(
+            f"StandardScaler included in model bundle with {len(scaler.mean_)} features")
+        print_info(
+            f"Feature scaling mean range: [{scaler.mean_.min():.4f}, {scaler.mean_.max():.4f}]")
+        print_info(
+            f"Feature scaling std range: [{scaler.scale_.min():.4f}, {scaler.scale_.max():.4f}]")
+
+    # Save model bundle to disk for later use
+    # Include the scaler, feature columns, and configuration details
     model_bundle = {
         "model": bst_final,
-        "feature_cols": feature_cols,
+        "scaler": scaler,  # Include the scaler for consistent scaling in prediction
+        "feature_cols": feature_cols,  # Include feature columns list
         "percentiles": percentiles,
-        "percentile_values": [df['target_streak_length'].quantile(p) for p in percentiles],
-        "window": lookback_window,
+        "percentile_values": percentile_values,
+        "multiplier_threshold": multiplier_threshold,
+        "window": window,
         "baseline_probs": baseline_probs,
         "p_hat": p_hat,
-        "scaler": scaler,
-        "version": "1.1.0",  # Add version for compatibility checks
-        "multiplier_threshold": multiplier_threshold
+        "model_version": "1.1",  # Increment version to indicate fixed data leakage
+        "training_date": pd.Timestamp.now().isoformat(),
+        "num_features": len(feature_cols),
+        "num_classes": num_classes
     }
+
+    # Save the model bundle to disk
+    os.makedirs(output_dir, exist_ok=True)
+    model_path = os.path.join(output_dir, "xgboost_model.pkl")
     joblib.dump(model_bundle, model_path)
-    print_success(f"Saved streak-based model bundle to {model_path} (including scaler)")
+    print_success(
+        f"Saved streak-based model bundle to {model_path} (including scaler)")
 
-    # Test-set evaluation
+    # Create DMatrix for testing
     dtest = xgb.DMatrix(X_test, label=y_test, feature_names=feature_cols)
-    probs_test = bst_final.predict(dtest)
-    y_pred = np.argmax(probs_test, axis=1)
 
-    # Calculate metrics
-    logloss_gbm = log_loss(y_test, probs_test)
-    ece_gbm = expected_calibration_error(y_test, probs_test)
+    # Generate confusion matrix and evaluation metrics on the test set
+    generate_confusion_matrix(
+        X_test, y_test, bst_final, feature_cols, output_dir, percentiles)
+
+    # Calculate expected calibration error
+    y_probs = bst_final.predict(dtest)
+    ece = expected_calibration_error(y_test, y_probs)
 
     # Display evaluation metrics
-    uplift = (logloss_baseline - logloss_gbm) / logloss_baseline * 100
-    model_metrics = {
+    eval_metrics = {
         "Log Loss (Baseline)": f"{logloss_baseline:.4f}",
-        "Log Loss (Model)": f"{logloss_gbm:.4f}",
-        "Log Loss Improvement": f"{uplift:.2f}%",
-        "Expected Calibration Error": f"{ece_gbm:.4f}",
+        "Log Loss (Model)": f"{log_loss(y_test, y_probs):.4f}",
+        "Log Loss Improvement": f"{(1 - (log_loss(y_test, y_probs) / logloss_baseline)) * 100:.2f}%",
+        "Expected Calibration Error": f"{ece:.4f}"
     }
-    create_stats_table("Model Evaluation Metrics", model_metrics)
-
-    # Get full classification report
-    report = classification_report(y_test, y_pred, output_dict=True)
-
-    # Create an improved classification report table with all metrics
-    report_table = create_table("Classification Report", [
-        "Class", "Precision", "Recall", "F1-Score", "Support"])
-
-    # Add rows for each class
-    for class_id in sorted([k for k in report.keys() if k not in ['accuracy', 'macro avg', 'weighted avg']]):
-        class_metrics = report[class_id]
-        class_name = f"Class {class_id}"
-        add_table_row(report_table, [
-            class_name,
-            f"{class_metrics['precision']:.4f}",
-            f"{class_metrics['recall']:.4f}",
-            f"{class_metrics['f1-score']:.4f}",
-            f"{class_metrics['support']}"
-        ])
-
-    # Add accuracy, macro avg, and weighted avg
-    for avg_type in ['accuracy', 'macro avg', 'weighted avg']:
-        if avg_type in report:
-            metrics = report[avg_type]
-            if avg_type == 'accuracy':
-                add_table_row(report_table, [
-                    avg_type,
-                    "",
-                    "",
-                    f"{metrics:.4f}" if isinstance(
-                        metrics, float) else f"{metrics['f1-score']:.4f}",
-                    f"{sum(report[c]['support'] for c in report if c not in ['accuracy', 'macro avg', 'weighted avg'])}"
-                ])
-            else:
-                add_table_row(report_table, [
-                    avg_type,
-                    f"{metrics['precision']:.4f}",
-                    f"{metrics['recall']:.4f}",
-                    f"{metrics['f1-score']:.4f}",
-                    f"{metrics['support']}"
-                ])
-
-    # Display the full table
-    display_table(report_table)
-
-    # Generate confusion matrix
-    generate_confusion_matrix(X_test, y_test, bst_final,
-                              feature_cols, output_dir, percentiles)
-
-    # Save test predictions with additional columns
-    # Assemble into a dataframe
-    test_df_output = test_df.copy()
-
-    # Add probability columns
-    for i in range(probs_test.shape[1]):
-        test_df_output[f'prob_class{i}'] = probs_test[:, i]
-
-    # Add predicted class as integer
-    test_df_output['predicted'] = y_pred.astype(int)
-
-    # Add actual class based on streak_length
-    # Add actual class and hit/miss columns
-    if 'target_cluster' in test_df_output.columns:
-        test_df_output['actual_class'] = test_df_output['target_cluster'].astype(
-            int)
-    else:
-        # Recalculate actual class from streak_length if needed
-        conditions = []
-        results = []
-        for i in range(len(percentiles) + 1):
-            if i == 0:
-                conditions.append(
-                    test_df_output['streak_length'] <= percentile_values[0])
-            elif i == len(percentiles):
-                conditions.append(
-                    test_df_output['streak_length'] > percentile_values[-1])
-            else:
-                conditions.append(
-                    (test_df_output['streak_length'] > percentile_values[i-1]) &
-                    (test_df_output['streak_length'] <= percentile_values[i])
-                )
-            results.append(i)
-
-        test_df_output['actual_class'] = np.select(
-            conditions, results, default=np.nan).astype(int)
-
-    # Add hit/miss column (1 if prediction matches actual, 0 otherwise)
-    test_df_output['hit_miss'] = (
-        test_df_output['predicted'] == test_df_output['actual_class']).astype(int)
-
-    # Remove the descriptive range columns - not needed
-
-    # Save the test predictions
-    test_preds_path = os.path.join(output_dir, "test_predictions.csv")
-    test_df_output.to_csv(test_preds_path)
-    print_info(f"Saved detailed streak test predictions to {test_preds_path}")
-
-    # Calculate and display hit/miss stats
-    hit_rate = test_df_output['hit_miss'].mean() * 100
-    print_success(f"Overall prediction accuracy: {hit_rate:.2f}%")
-
-    # Print per-class hit rates
-    class_hit_rates = test_df_output.groupby(
-        'actual_class')['hit_miss'].mean() * 100
-    hit_rates_table = create_table(
-        "Per-Class Accuracy", ["Class", "Range", "Accuracy"])
-
-    for class_id, hit_rate in class_hit_rates.items():
-        class_range = {
-            0: f"1-{int(percentile_values[0])}",
-            1: f"{int(percentile_values[0])+1}-{int(percentile_values[1])}",
-            2: f"{int(percentile_values[1])+1}-{int(percentile_values[2])}",
-            3: f">{int(percentile_values[2])}"
-        }.get(class_id, "Unknown")
-
-        add_table_row(hit_rates_table, [
-            f"Class {int(class_id)}",
-            class_range,
-            f"{hit_rate:.2f}%"
-        ])
-
-    display_table(hit_rates_table)
+    create_stats_table("Model Evaluation Metrics", eval_metrics)
 
     return model_bundle
 
@@ -584,7 +492,7 @@ def generate_confusion_matrix(X_test, y_test, model, feature_cols, output_dir,
 def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
                          feature_cols: List[str] = None, multiplier_threshold: float = 10.0,
                          percentiles: List[float] = [0.25, 0.50, 0.75],
-                         scaler = None) -> Dict[str, float]:
+                         scaler=None) -> Dict[str, float]:
     """
     Predict the next streak length cluster based on recent streak patterns.
 
@@ -609,23 +517,26 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
         try:
             model_bundle = joblib.load(model_or_path)
             model = model_bundle.get("model")
-            
+
             # Get saved feature columns from bundle
             saved_feature_cols = model_bundle.get("feature_cols")
             if saved_feature_cols:
-                print_info(f"Loaded feature columns from model bundle: {len(saved_feature_cols)} features")
+                print_info(
+                    f"Loaded feature columns from model bundle: {len(saved_feature_cols)} features")
                 feature_cols = saved_feature_cols
-                
+
             # Get saved scaler from bundle if not provided
             if scaler is None and "scaler" in model_bundle:
                 scaler = model_bundle.get("scaler")
-                print_info("Using scaler from model bundle for feature normalization")
+                print_info(
+                    "Using scaler from model bundle for feature normalization")
                 if hasattr(scaler, 'mean_'):
                     print_info(f"Scaler has {len(scaler.mean_)} features")
-            
+
             # Log bundle version information
             if "version" in model_bundle:
-                print_info(f"Model bundle version: {model_bundle.get('version')}")
+                print_info(
+                    f"Model bundle version: {model_bundle.get('version')}")
         except Exception as e:
             print_error(f"Error loading model: {str(e)}")
             print_warning("Attempting to proceed with fallback approach...")
@@ -638,16 +549,18 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
     else:
         model = model_or_path  # Already a model object
         print_info("Using provided model object directly")
-        
+
         # Check if it's actually a bundle
         if isinstance(model, dict) and "model" in model:
-            print_info("Model object appears to be a bundle, extracting components...")
+            print_info(
+                "Model object appears to be a bundle, extracting components...")
             if "scaler" in model and scaler is None:
                 scaler = model.get("scaler")
                 print_info("Using scaler from model bundle")
             if "feature_cols" in model and feature_cols is None:
                 feature_cols = model.get("feature_cols")
-                print_info(f"Using {len(feature_cols)} feature columns from model bundle")
+                print_info(
+                    f"Using {len(feature_cols)} feature columns from model bundle")
             model = model.get("model")
 
     # Handle empty streaks gracefully
@@ -784,7 +697,7 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
             print_warning(
                 f"Found {missing_count} missing values in feature vector. Filling with zeros.")
             feat_vec = feat_vec.fillna(0)
-                
+
         # Apply scaling if we have a scaler
         if scaler is not None:
             try:
@@ -794,11 +707,12 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
                 # Apply transform (not fit_transform!)
                 feat_array = scaler.transform(feat_array)
                 print_info("Successfully applied feature scaling")
-                
+
                 # Log scaling stats
                 if hasattr(scaler, 'mean_'):
-                    print_info(f"Scaler features: {len(scaler.mean_)}, Input features: {len(feat_vec)}")
-                    
+                    print_info(
+                        f"Scaler features: {len(scaler.mean_)}, Input features: {len(feat_vec)}")
+
             except Exception as e:
                 print_error(f"Error applying scaler: {str(e)}")
                 print_warning("Continuing with unscaled features as fallback!")
@@ -808,8 +722,9 @@ def predict_next_cluster(model_or_path, last_streaks: List[Dict], window: int,
             # Ensure vec is a numpy array of the right dimension
             feat_array = feat_vec.values
             feat_array = feat_array.reshape(1, -1)
-                
-        print_info(f"Feature vector shape: {feat_array.shape}, dtype: {feat_array.dtype}")
+
+        print_info(
+            f"Feature vector shape: {feat_array.shape}, dtype: {feat_array.dtype}")
 
         # Make prediction with aligned features - handle feature names carefully
         try:

@@ -316,14 +316,36 @@ class CrashStreakAnalyzer:
         """
         print_info("Training model to predict streak length clusters")
 
-        model_results = modeling.train_model(
-            self.df, self.feature_cols,
-            self.TEST_FRAC, self.RANDOM_SEED, eval_folds,
-            self.output_dir, self.MULTIPLIER_THRESHOLD,
-            percentiles=self.PERCENTILES,
-            window=self.WINDOW,
-            scaler=self.scaler
-        )
+        # Check if we have raw game data or already processed feature data
+        if "Game ID" in self.df.columns and "Bust" in self.df.columns:
+            # We have raw game data - pass it directly to modeling.train_model with updated approach
+            print_info(
+                "Using raw game data for model training with leakage-free approach")
+            model_results = modeling.train_model(
+                self.df, [],  # feature_cols will be generated within train_model
+                self.TEST_FRAC, self.RANDOM_SEED, eval_folds,
+                self.output_dir, self.MULTIPLIER_THRESHOLD,
+                percentiles=self.PERCENTILES,
+                window=self.WINDOW
+            )
+            # Update feature_cols and scaler from model_results
+            if isinstance(model_results, dict):
+                if "feature_cols" in model_results:
+                    self.feature_cols = model_results["feature_cols"]
+                if "scaler" in model_results:
+                    self.scaler = model_results["scaler"]
+        else:
+            # We have already processed feature data (legacy support)
+            print_warning(
+                "Using pre-processed feature data - this may have data leakage issues")
+            model_results = modeling.train_model(
+                self.df, self.feature_cols,
+                self.TEST_FRAC, self.RANDOM_SEED, eval_folds,
+                self.output_dir, self.MULTIPLIER_THRESHOLD,
+                percentiles=self.PERCENTILES,
+                window=self.WINDOW,
+                scaler=self.scaler
+            )
 
         # model_results can be either a tuple of (model, baseline_probs, p_hat)
         # or a new-style bundle including the model
