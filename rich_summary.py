@@ -9,6 +9,8 @@ This script displays a formatted summary of the temporal analysis outputs.
 import os
 import json
 import sys
+import joblib
+import matplotlib.pyplot as plt
 from datetime import datetime
 
 # Import rich logging
@@ -90,6 +92,97 @@ def display_output_summary(output_dir="./output"):
 
     display_table(summary_table)
 
+    # Display feature importance from model file if available
+    model_path = os.path.join(output_dir, "temporal_model.pkl")
+    if os.path.exists(model_path):
+        try:
+            print_info("Feature Importance Summary:")
+            model_bundle = joblib.load(model_path)
+
+            if "feature_importance" in model_bundle:
+                # Extract feature importance data
+                importance_dict = model_bundle["feature_importance"]
+                features = importance_dict.get("Feature", [])
+                importance = importance_dict.get("Importance", [])
+                percentage = importance_dict.get("Percentage", [])
+
+                # Create feature importance table for top 10 features
+                importance_table = create_table(
+                    "Top 10 Feature Importance",
+                    ["Feature", "Importance", "% of Total"]
+                )
+
+                # Get indices for top 10 features (they may not be in sorted order in the dictionary)
+                if len(features) > 10:
+                    # Create sorted indices based on importance
+                    sorted_indices = sorted(
+                        range(len(importance)),
+                        key=lambda i: float(importance[i]) if isinstance(
+                            importance[i], (int, float, str)) else 0,
+                        reverse=True
+                    )[:10]
+                else:
+                    sorted_indices = range(len(features))
+
+                # Add rows for top features
+                for idx in sorted_indices:
+                    feature_name = features[idx] if idx < len(
+                        features) else f"Feature {idx}"
+                    importance_value = importance[idx] if idx < len(
+                        importance) else 0
+                    percentage_value = percentage[idx] if idx < len(
+                        percentage) else 0
+
+                    # Format values properly
+                    if isinstance(importance_value, (int, float)):
+                        importance_str = f"{float(importance_value):.2f}"
+                    else:
+                        importance_str = str(importance_value)
+
+                    if isinstance(percentage_value, (int, float)):
+                        percentage_str = f"{float(percentage_value):.2f}%"
+                    else:
+                        percentage_str = str(percentage_value)
+
+                    add_table_row(importance_table, [
+                        feature_name,
+                        importance_str,
+                        percentage_str
+                    ])
+
+                display_table(importance_table)
+
+            # Also display model metrics if available
+            if "metrics" in model_bundle:
+                metrics = model_bundle["metrics"]
+                metrics_table = create_table(
+                    "Model Performance Summary",
+                    ["Metric", "Value"]
+                )
+
+                # Add rows for metrics
+                for metric, value in metrics.items():
+                    if isinstance(value, float):
+                        formatted_value = f"{value:.4f}"
+                        if "improvement" in metric.lower() or "percent" in metric.lower():
+                            formatted_value = f"{value:.2f}%"
+                    else:
+                        formatted_value = str(value)
+
+                    # Format metric name for display (convert snake_case to Title Case)
+                    display_name = " ".join(word.capitalize()
+                                            for word in metric.split("_"))
+
+                    add_table_row(metrics_table, [
+                        display_name,
+                        formatted_value
+                    ])
+
+                display_table(metrics_table)
+
+        except Exception as e:
+            print_info(f"Could not read model file: {str(e)}")
+
     # If metrics file exists, show summary statistics
     metrics_file = os.path.join(
         output_dir, "temporal_performance_metrics.json")
@@ -97,6 +190,8 @@ def display_output_summary(output_dir="./output"):
         try:
             with open(metrics_file, 'r') as f:
                 metrics = json.load(f)
+
+            print_info("Complete Performance Metrics:")
 
             # Display performance by streak category
             if 'by_streak_category' in metrics:
@@ -112,19 +207,37 @@ def display_output_summary(output_dir="./output"):
 
                 display_table(category_table)
 
-            # Display performance by time period (last 3 periods)
-            if 'by_time_period' in metrics:
-                print_info("Performance in Recent Time Periods:")
+            # Display performance by streak length
+            if 'by_streak_length' in metrics:
+                print_info("Performance by Streak Length Range:")
+                length_table = create_table("Accuracy by Streak Length",
+                                            ["Length Range", "Accuracy"])
 
-                # Get the last 3 time periods
+                # Order the streak length ranges properly
+                ordered_ranges = ["1-3", "4-7", "8-14", "15-30", "31+"]
+
+                for length_range in ordered_ranges:
+                    if length_range in metrics['by_streak_length']:
+                        accuracy = metrics['by_streak_length'][length_range]
+                        add_table_row(length_table, [
+                            length_range,
+                            f"{float(accuracy) * 100:.2f}%"
+                        ])
+
+                display_table(length_table)
+
+            # Display performance for ALL time periods
+            if 'by_time_period' in metrics:
+                print_info("Performance Across All Time Periods:")
+
+                # Get all time periods and sort them
                 time_periods = list(metrics['by_time_period'].keys())
                 time_periods.sort()
-                recent_periods = time_periods[-3:]
 
-                time_table = create_table("Recent Accuracy Trends",
+                time_table = create_table("Accuracy Over Time",
                                           ["Time Period", "Accuracy"])
 
-                for period in recent_periods:
+                for period in time_periods:
                     accuracy = metrics['by_time_period'][period]
                     add_table_row(time_table, [
                         period,
