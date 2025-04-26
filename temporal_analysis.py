@@ -25,6 +25,8 @@ from typing import Dict, List, Tuple, Optional
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import log_loss, accuracy_score, classification_report
 from datetime import datetime
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
 
 # Import rich logging
 from logger_config import (
@@ -522,7 +524,10 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
             'baseline_log_loss': baseline_logloss,
             'log_loss_improvement': logloss_improvement
         },
-        'train_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        'train_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'test_indices': X_test.index.tolist(),
+        'test_labels': y_test.tolist(),
+        'predictions': y_pred.tolist()
     }
 
     # Save the model bundle
@@ -552,6 +557,59 @@ def analyze_temporal_performance(features_df, y_pred, test_indices, percentile_v
     test_df['predicted_cluster'] = y_pred
     test_df['correct'] = (test_df['predicted_cluster'] ==
                           test_df['target_cluster']).astype(int)
+
+    # Add prediction distribution metrics
+    print_info("Class Distribution Metrics:")
+
+    # Get counts for actual classes
+    actual_counts = test_df['target_cluster'].value_counts().sort_index()
+    actual_pcts = actual_counts / len(test_df) * 100
+
+    # Get counts for predicted classes
+    pred_counts = test_df['predicted_cluster'].value_counts().sort_index()
+    pred_pcts = pred_counts / len(test_df) * 100
+
+    # Create a metrics table
+    metrics_table = create_table("Class Distribution Metrics",
+                                 ["Class", "Actual Count", "Actual %", "Predicted Count", "Predicted %"])
+
+    # Add rows for each class
+    for cls in sorted(set(test_df['target_cluster'].unique()).union(test_df['predicted_cluster'].unique())):
+        act_count = actual_counts.get(cls, 0)
+        act_pct = actual_pcts.get(cls, 0)
+        pred_count = pred_counts.get(cls, 0)
+        pred_pct = pred_pcts.get(cls, 0)
+
+        # Map class index to description
+        if cls == 0:
+            cls_desc = f"{cls}: Bottom 25% (1-3)"
+        elif cls == 1:
+            cls_desc = f"{cls}: 25-50% (4-7)"
+        elif cls == 2:
+            cls_desc = f"{cls}: 50-75% (8-14)"
+        elif cls == 3:
+            cls_desc = f"{cls}: Top 25% (>14)"
+        else:
+            cls_desc = f"Class {cls}"
+
+        add_table_row(metrics_table, [
+            cls_desc,
+            f"{act_count}",
+            f"{act_pct:.2f}%",
+            f"{pred_count}",
+            f"{pred_pct:.2f}%"
+        ])
+
+    # Add total row
+    add_table_row(metrics_table, [
+        "Total",
+        f"{len(test_df)}",
+        "100.00%",
+        f"{len(test_df)}",
+        "100.00%"
+    ])
+
+    display_table(metrics_table)
 
     # Analyze performance by streak category - Fix: Add observed=False explicitly
     category_perf = test_df.groupby('streak_category', observed=False)[
@@ -608,6 +666,16 @@ def analyze_temporal_performance(features_df, y_pred, test_indices, percentile_v
     time_perf = test_df.groupby('temporal_group', observed=False)[
         'correct'].mean()
 
+    # Fix: Sort time periods numerically instead of lexicographically
+    time_perf = time_perf.reset_index()
+    # Extract period numbers and convert to integers for proper sorting
+    time_perf['period_num'] = time_perf['temporal_group'].str.extract(
+        r'P(\d+)').astype(int)
+    time_perf = time_perf.sort_values('period_num')
+    # Convert back to a series with correct ordering
+    time_perf = pd.Series(
+        time_perf['correct'].values, index=time_perf['temporal_group'].values)
+
     # Performance metrics by time period
     performance_metrics = {
         'by_streak_category': category_perf.to_dict(),
@@ -640,6 +708,70 @@ def analyze_temporal_performance(features_df, y_pred, test_indices, percentile_v
     plt.close()
 
     print_info(f"Saved temporal performance plot to {plot_path}")
+
+    # Create a confusion matrix visualization
+    print_info("Creating confusion matrix visualization")
+
+    cm = confusion_matrix(test_df['target_cluster'],
+                          test_df['predicted_cluster'])
+    plt.figure(figsize=(10, 8))
+
+    # Define class labels for better readability
+    class_labels = [
+        "Bottom 25% (1-3)",
+        "25-50% (4-7)",
+        "50-75% (8-14)",
+        "Top 25% (>14)"
+    ]
+
+    # Display confusion matrix as rich table
+    print_info("Confusion Matrix Table:")
+    cm_table = create_table("Confusion Matrix",
+                            ["Actual\\Predicted"] + [f"Pred {i}: {label}" for i, label in enumerate(class_labels)] + ["Row Total"])
+
+    # Calculate row totals for percentages
+    row_totals = cm.sum(axis=1)
+
+    # Add rows with counts and percentages
+    for i, (row, label) in enumerate(zip(cm, class_labels)):
+        row_data = [f"Act {i}: {label}"]
+        for j, count in enumerate(row):
+            percentage = (count / row_totals[i]) * \
+                100 if row_totals[i] > 0 else 0
+            cell_text = f"{count} ({percentage:.1f}%)"
+            row_data.append(cell_text)
+        # Add row total with percentage of the entire dataset
+        total_sum = cm.sum()
+        row_percentage = (row_totals[i] / total_sum) * 100
+        row_data.append(f"{row_totals[i]} ({row_percentage:.1f}%)")
+        add_table_row(cm_table, row_data)
+
+    # Add a totals row
+    col_totals = cm.sum(axis=0)
+    total_sum = cm.sum()
+    total_row = ["Total"]
+    for col_total in col_totals:
+        percentage = (col_total / total_sum) * 100
+        total_row.append(f"{col_total} ({percentage:.1f}%)")
+    # Add grand total
+    total_row.append(f"{total_sum} (100.0%)")
+    add_table_row(cm_table, total_row)
+
+    display_table(cm_table)
+
+    # Plot confusion matrix with percentages
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=class_labels, yticklabels=class_labels)
+    plt.xlabel('Predicted Class')
+    plt.ylabel('Actual Class')
+    plt.title('Confusion Matrix')
+
+    # Save confusion matrix plot
+    cm_path = os.path.join(output_dir, 'confusion_matrix.png')
+    plt.savefig(cm_path, bbox_inches='tight')
+    plt.close()
+
+    print_info(f"Saved confusion matrix visualization to {cm_path}")
 
     return performance_metrics
 
