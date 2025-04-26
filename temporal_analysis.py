@@ -27,6 +27,8 @@ from sklearn.metrics import log_loss, accuracy_score, classification_report
 from datetime import datetime
 from sklearn.metrics import confusion_matrix
 import seaborn as sns
+from sklearn.model_selection import cross_val_score
+from sklearn.ensemble import RandomForestClassifier
 
 # Import rich logging
 from logger_config import (
@@ -875,8 +877,8 @@ def parse_arguments():
     parser.add_argument('--test_size', type=float, default=0.2,
                         help='Size of test set for temporal validation (default: 0.2)')
 
-    parser.add_argument('--lookback', type=int, default=10,
-                        help='Number of previous streaks to use for features (default: 10)')
+    parser.add_argument('--lookback', type=int, default=5,
+                        help='Number of previous streaks to use for features (default: 5)')
 
     parser.add_argument('--num_streaks', type=int, default=None,
                         help='Number of most recent streaks to use for prediction (prediction mode only)')
