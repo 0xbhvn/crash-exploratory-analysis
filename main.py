@@ -1,25 +1,26 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Main entry point for Crash Game Streak Analysis.
+Main module for Crash Game 10× Streak Analysis.
 
-This script provides the command-line interface and coordinates the analysis.
+This module contains the main entry point for the application.
 
 Usage:
     python main.py --input games.csv [--multiplier_threshold 10.0] [--window 50] [--test_frac 0.2] [--output_dir ./output] [--percentiles 0.25,0.50,0.75]
 """
 
-from analyzer import CrashStreakAnalyzer
 import os
 import sys
 import argparse
 import logging
-from typing import Dict, List, Tuple
 from dotenv import load_dotenv
 from pathlib import Path
 
 # Import rich logging
 from logger_config import setup_logging, console, print_info, print_success, print_warning, print_error, print_panel
+
+# Import local modules
+from analyzer import CrashStreakAnalyzer
 
 # Load environment variables from .env file
 load_dotenv()
@@ -29,8 +30,6 @@ Path('logs').mkdir(exist_ok=True)
 
 # Setup rich logging
 logger = setup_logging()
-
-# Import local modules
 
 
 def parse_arguments():
@@ -68,6 +67,12 @@ def parse_arguments():
                         help='Load existing model without retraining')
     parser.add_argument('--model_path', default='./output/xgboost_model.pkl',
                         help='Path to the saved model file (used with --load_model)')
+
+    # Add proper time-series mode argument (on by default)
+    parser.add_argument('--time_series_mode', action='store_true', default=True,
+                        help='Use proper time-series train/test splitting to prevent data leakage (default: True)')
+    parser.add_argument('--legacy_mode', action='store_true',
+                        help='Use the legacy feature preparation method (may cause data leakage)')
 
     # Flags for database fetch
     parser.add_argument('--update_csv', action='store_true',
@@ -140,7 +145,8 @@ def main():
         test_frac=args.test_frac,
         random_seed=args.random_seed,
         output_dir=args.output_dir,
-        percentiles=percentiles
+        percentiles=percentiles,
+        time_series_mode=not args.legacy_mode
     )
 
     # Load data

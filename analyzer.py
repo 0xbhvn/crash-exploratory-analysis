@@ -13,6 +13,7 @@ import numpy as np
 import xgboost as xgb
 import joblib
 from typing import Dict, List, Tuple, Optional, Any
+from sklearn.metrics import log_loss
 
 # Import from local modules
 import data_processing
@@ -44,7 +45,8 @@ class CrashStreakAnalyzer:
                  test_frac: float = 0.2,
                  random_seed: int = 42,
                  output_dir: str = './output',
-                 percentiles: List[float] = [0.25, 0.50, 0.75]):
+                 percentiles: List[float] = [0.25, 0.50, 0.75],
+                 time_series_mode: bool = True):
         """
         Initialize the analyzer with configuration parameters.
 
@@ -55,6 +57,7 @@ class CrashStreakAnalyzer:
             random_seed: Random seed for reproducibility
             output_dir: Directory to save outputs
             percentiles: List of percentile boundaries for clustering (default: [0.25, 0.50, 0.75])
+            time_series_mode: Whether to use proper time-series train/test splitting (default: True)
         """
         self.MULTIPLIER_THRESHOLD = multiplier_threshold
         self.WINDOW = window
@@ -63,6 +66,7 @@ class CrashStreakAnalyzer:
         self.output_dir = output_dir
         self.PERCENTILES = percentiles
         self.NUM_CLUSTERS = len(percentiles) + 1
+        self.TIME_SERIES_MODE = time_series_mode
 
         # Create output directory if it doesn't exist
         if not os.path.exists(output_dir):
@@ -71,12 +75,15 @@ class CrashStreakAnalyzer:
 
         # Initialize attributes that will be populated later
         self.df = None
+        self.train_df = None
+        self.test_df = None
         self.feature_cols = None
         self.bst_final = None
         self.p_hat = None
         self.baseline_probs = None
         self.percentile_values = None
         self.scaler = None
+        self.streak_df = None
 
         # Display initialization info in a panel
         config_info = (
@@ -85,7 +92,8 @@ class CrashStreakAnalyzer:
             f"Test Fraction: {test_frac}\n"
             f"Random Seed: {random_seed}\n"
             f"Output Directory: {output_dir}\n"
-            f"Percentiles: {percentiles}"
+            f"Percentiles: {percentiles}\n"
+            f"Time Series Mode: {time_series_mode}"
         )
         print_panel(config_info, title="Analyzer Configuration", style="blue")
 
@@ -240,21 +248,56 @@ class CrashStreakAnalyzer:
         """
         Prepare features for machine learning using streak-based analysis.
 
+        If time_series_mode is True, uses the prepare_train_test_features function
+        to properly split the data chronologically and prevent data leakage.
+
         Returns:
             DataFrame with features and target clustered by percentiles
         """
         print_info("Preparing streak-based features for machine learning")
 
-        # The window parameter is now used as a lookback window of previous streaks rather than games
-        self.df, self.feature_cols, self.scaler = data_processing.prepare_features(
-            self.df, self.WINDOW,
-            multiplier_threshold=self.MULTIPLIER_THRESHOLD,
-            percentiles=self.PERCENTILES)
+        # Store streak dataframe for later use in prediction
+        if not hasattr(self, 'streak_df') or self.streak_df is None:
+            self.streak_df = data_processing.extract_streaks_and_multipliers(
+                self.df, self.MULTIPLIER_THRESHOLD)
 
-        # Get the percentile values for display purposes
-        if 'target_streak_length' in self.df.columns:
-            self.percentile_values = [
-                self.df['target_streak_length'].quantile(p) for p in self.PERCENTILES]
+        if self.TIME_SERIES_MODE:
+            # Use the proper time-series train/test split to prevent data leakage
+            print_info(
+                "Using time-series train/test split to prevent data leakage")
+            self.train_df, self.test_df, self.feature_cols, self.scaler = data_processing.prepare_train_test_features(
+                self.df, self.WINDOW,
+                self.TEST_FRAC,
+                self.RANDOM_SEED,
+                multiplier_threshold=self.MULTIPLIER_THRESHOLD,
+                percentiles=self.PERCENTILES
+            )
+
+            # Calculate percentile values from training data for display
+            if 'target_streak_length' in self.train_df.columns:
+                self.percentile_values = [
+                    self.train_df['target_streak_length'].quantile(p) for p in self.PERCENTILES]
+
+            # For backward compatibility, create a combined dataframe with all samples
+            self.df = pd.concat([self.train_df, self.test_df], axis=0)
+
+        else:
+            # Legacy approach - processes all data at once which can cause data leakage
+            print_warning(
+                "Using legacy feature preparation - this may cause data leakage")
+            print_warning(
+                "Consider using time_series_mode=True for more reliable results")
+
+            # The window parameter is now used as a lookback window of previous streaks rather than games
+            self.df, self.feature_cols, self.scaler = data_processing.prepare_features(
+                self.df, self.WINDOW,
+                multiplier_threshold=self.MULTIPLIER_THRESHOLD,
+                percentiles=self.PERCENTILES)
+
+            # Get the percentile values for display purposes
+            if 'target_streak_length' in self.df.columns:
+                self.percentile_values = [
+                    self.df['target_streak_length'].quantile(p) for p in self.PERCENTILES]
 
         # Display feature information
         feature_info = {
@@ -316,9 +359,171 @@ class CrashStreakAnalyzer:
         """
         print_info("Training model to predict streak length clusters")
 
-        # Check if we have raw game data or already processed feature data
-        if "Game ID" in self.df.columns and "Bust" in self.df.columns:
-            # We have raw game data - pass it directly to modeling.train_model with updated approach
+        if self.TIME_SERIES_MODE and hasattr(self, 'train_df') and self.train_df is not None:
+            # Use the already prepared train/test split dataframes
+            print_info(
+                "Using pre-split train/test dataframes from time-series preparation")
+
+            # Create feature matrices and targets
+            X_train = self.train_df[self.feature_cols]
+            y_train = self.train_df['target_cluster']
+            X_test = self.test_df[self.feature_cols]
+            y_test = self.test_df['target_cluster']
+
+            # Calculate baseline probabilities
+            unique_classes = sorted(y_train.unique())
+            baseline_probs = {}
+            for c in unique_classes:
+                baseline_probs[c] = (y_train == c).mean()
+
+            # Set up empirical hit rate
+            p_hat = 1.0
+
+            # Create XGBoost parameters
+            num_classes = len(unique_classes)
+            params = dict(
+                objective="multi:softprob",
+                num_class=num_classes,
+                max_depth=6,
+                eta=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                eval_metric="mlogloss",
+                seed=self.RANDOM_SEED
+            )
+
+            # Log baseline info
+            print_info(
+                f"Baseline probabilities: {', '.join([f'Class {k}: {v:.3f}' for k, v in baseline_probs.items()])}")
+            print_info(
+                f"Empirical {self.MULTIPLIER_THRESHOLD}× hit rate in streaks: {p_hat:.4f}")
+
+            # Display baseline probabilities
+            self._display_baseline_probabilities(baseline_probs)
+
+            # Calculate baseline log loss
+            baseline_pred = np.tile(
+                list(baseline_probs.values()), (len(y_test), 1))
+            logloss_baseline = log_loss(y_test, baseline_pred)
+            print_info(f"Baseline geometric log-loss: {logloss_baseline:.4f}")
+
+            # Display model parameters
+            param_table = create_table("XGBoost Parameters", [
+                                       "Parameter", "Value"])
+            for param, value in params.items():
+                add_table_row(param_table, [param, str(value)])
+            display_table(param_table)
+
+            # Perform cross-validation
+            print_info(
+                f"Performing {eval_folds}-fold cross-validation (optimized)")
+            cv_table = create_table("Cross-Validation Results",
+                                    ["Fold", "Best Round", "Log Loss"])
+
+            # Prepare DMatrix
+            dtrain_full = xgb.DMatrix(X_train, label=y_train,
+                                      feature_names=self.feature_cols)
+
+            # Simplified cross-validation approach
+            max_rounds = 2000
+            early_stopping = 100
+
+            best_ntrees = []
+
+            # Perform CV using time-series splits
+            n_train = len(X_train)
+            for fold, (tr_idx, val_idx) in enumerate(modeling.rolling_origin_indices(n_train, eval_folds, gap=self.WINDOW), 1):
+                # Create DMatrix for training and validation
+                dtr = xgb.DMatrix(
+                    X_train.iloc[tr_idx], label=y_train.iloc[tr_idx], feature_names=self.feature_cols)
+                dval = xgb.DMatrix(
+                    X_train.iloc[val_idx], label=y_train.iloc[val_idx], feature_names=self.feature_cols)
+
+                # Train with early stopping
+                print_info(
+                    f"Training fold {fold} with {len(tr_idx)} training samples and {len(val_idx)} validation samples")
+                bst = xgb.train(
+                    params, dtr,
+                    num_boost_round=max_rounds,
+                    evals=[(dval, "val")],
+                    early_stopping_rounds=early_stopping,
+                    verbose_eval=False
+                )
+
+                # Record results
+                br = modeling.best_round(bst, default_rounds=max_rounds)
+                best_ntrees.append(br)
+
+                # Add row to CV table
+                best_score = bst.best_score if hasattr(
+                    bst, 'best_score') else "N/A"
+                add_table_row(cv_table, [fold, br, f"{best_score:.4f}" if isinstance(
+                    best_score, float) else best_score])
+
+            display_table(cv_table)
+
+            # Use median of best rounds but limit to reasonable number
+            nrounds = min(max_rounds, int(np.median(best_ntrees)))
+            print_info(
+                f"Using n_rounds = {nrounds} (median from cross-validation)")
+
+            # Final fit on all training data
+            print_info("Training final model on all streak training data")
+            bst_final = xgb.train(params, dtrain_full, num_boost_round=nrounds)
+
+            # Create model bundle
+            model_bundle = {
+                "model": bst_final,
+                "feature_cols": self.feature_cols,
+                "scaler": self.scaler,
+                "percentile_values": self.percentile_values,
+                "baseline_probs": baseline_probs,
+                "p_hat": p_hat,
+                "multiplier_threshold": self.MULTIPLIER_THRESHOLD,
+                "percentiles": self.PERCENTILES,
+                "version": "1.0.0",
+                "time_series_mode": True
+            }
+
+            # Save the model
+            model_path = os.path.join(self.output_dir, "xgboost_model.pkl")
+            joblib.dump(model_bundle, model_path)
+            print_success(
+                f"Saved streak-based model bundle to {model_path} (including scaler)")
+
+            # Generate and save confusion matrix
+            modeling.generate_confusion_matrix(X_test, y_test, bst_final,
+                                               self.feature_cols, self.output_dir,
+                                               self.PERCENTILES)
+
+            # Calculate model metrics
+            dtest = xgb.DMatrix(X_test, feature_names=self.feature_cols)
+            y_prob = bst_final.predict(dtest)
+            model_logloss = log_loss(y_test, y_prob)
+            ece = modeling.expected_calibration_error(y_test, y_prob)
+
+            metrics_table = create_stats_table("Model Evaluation Metrics", {
+                "Log Loss (Baseline)": f"{logloss_baseline:.4f}",
+                "Log Loss (Model)": f"{model_logloss:.4f}",
+                "Log Loss Improvement": f"{(1-(model_logloss/logloss_baseline))*100:.2f}%",
+                "Expected Calibration Error": f"{ece:.4f}"
+            })
+
+            # Store important values for later use
+            self.bst_final = model_bundle
+            self.baseline_probs = baseline_probs
+            self.p_hat = p_hat
+
+            # Generate feature importance plot
+            visualization.plot_feature_importance(
+                bst_final, self.feature_cols, self.output_dir)
+
+            print_success("Model training complete")
+
+            return self.bst_final
+
+        elif hasattr(self, 'df') and "Game ID" in self.df.columns and "Bust" in self.df.columns:
+            # We have raw game data - pass it directly to modeling.train_model with the leakage-free approach
             print_info(
                 "Using raw game data for model training with leakage-free approach")
             model_results = modeling.train_model(
@@ -334,10 +539,12 @@ class CrashStreakAnalyzer:
                     self.feature_cols = model_results["feature_cols"]
                 if "scaler" in model_results:
                     self.scaler = model_results["scaler"]
-        else:
-            # We have already processed feature data (legacy support)
+        elif hasattr(self, 'df') and 'target_cluster' in self.df.columns:
+            # We have already processed feature data (legacy support) - use with warning
             print_warning(
-                "Using pre-processed feature data - this may have data leakage issues")
+                "Using pre-processed feature data - this will likely result in data leakage and unreliable model performance")
+            print_warning(
+                "STRONGLY RECOMMENDED: Use time_series_mode=True for more reliable results")
             model_results = modeling.train_model(
                 self.df, self.feature_cols,
                 self.TEST_FRAC, self.RANDOM_SEED, eval_folds,
@@ -346,6 +553,11 @@ class CrashStreakAnalyzer:
                 window=self.WINDOW,
                 scaler=self.scaler
             )
+        else:
+            # Neither raw game data nor processed features available
+            print_error(
+                "No valid data available for training. Please load data first.")
+            return None
 
         # model_results can be either a tuple of (model, baseline_probs, p_hat)
         # or a new-style bundle including the model
@@ -396,6 +608,34 @@ class CrashStreakAnalyzer:
             create_stats_table("Model Evaluation", metrics)
 
         return self.bst_final
+
+    def _display_baseline_probabilities(self, baseline_probs):
+        """Helper method to display baseline probabilities in a table."""
+        # Display baseline probabilities
+        baseline_table = create_table("Baseline Probabilities", [
+            "Cluster", "Description", "Probability"])
+
+        # Create dynamic cluster descriptions based on percentiles
+        cluster_descriptions = {}
+        for i in range(len(self.PERCENTILES) + 1):
+            if i == 0:
+                cluster_descriptions[i] = f"Cluster {i}: Bottom {int(self.PERCENTILES[0]*100)}% (1-{int(self.percentile_values[0])} streak length)"
+            elif i == len(self.PERCENTILES):
+                cluster_descriptions[i] = f"Cluster {i}: Top {int((1-self.PERCENTILES[-1])*100)}% (>{int(self.percentile_values[-1])} streak length)"
+            else:
+                lower = int(self.PERCENTILES[i-1]*100)
+                upper = int(self.PERCENTILES[i]*100)
+                lower_streak = int(self.percentile_values[i-1]) + 1
+                upper_streak = int(self.percentile_values[i])
+                cluster_descriptions[
+                    i] = f"Cluster {i}: {lower}-{upper} percentile ({lower_streak}-{upper_streak} streak length)"
+
+        for cluster_id, prob in baseline_probs.items():
+            cluster_desc = cluster_descriptions.get(
+                cluster_id, f"Cluster {cluster_id}")
+            add_table_row(baseline_table, [
+                cluster_id, cluster_desc, f"{prob*100:.2f}%"])
+        display_table(baseline_table)
 
     def predict_next_cluster(self, recent_streaks: List[Dict] = None) -> Dict[str, float]:
         """

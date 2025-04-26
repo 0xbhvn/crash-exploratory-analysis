@@ -64,16 +64,30 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
             df, window, test_frac, random_seed, multiplier_threshold, percentiles
         )
     else:
-        # This is pre-processed feature data (legacy support)
+        # This is pre-processed feature data - we should warn clearly about leakage risk
         logger.warning(
-            "Using pre-processed feature data - this may have data leakage issues")
+            "Using pre-processed feature data - this may cause SEVERE data leakage issues")
+        logger.warning(
+            "Consider using raw game data with Game ID and Bust columns for proper time-based splitting")
+
+        # Check if this is likely a feature dataframe
+        if 'target_cluster' not in df.columns:
+            logger.error(
+                "DataFrame does not contain 'target_cluster' column. Cannot proceed with training.")
+            raise ValueError(
+                "DataFrame must contain 'target_cluster' column if not providing raw game data")
+
         # Make a copy to avoid modifying original
         df = df.copy()
 
-        # Time-ordered train/test split preserving streak continuity
-        # Use streak_number for ordering
+        # Use time-ordered train/test split preserving streak continuity
         if 'streak_number' in df.columns:
+            logger.info(
+                "Sorting by streak_number to maintain temporal ordering")
             df = df.sort_values('streak_number')
+        else:
+            logger.warning(
+                "No streak_number column found. Cannot guarantee temporal ordering.")
 
         # Use sequential split by index to ensure we don't break streak continuity
         split_idx = int(len(df) * (1 - test_frac))
@@ -121,8 +135,16 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
     # Create dynamic cluster descriptions based on percentiles
     cluster_descriptions = {}
     # Calculate the actual streak length values at each percentile
-    percentile_values = [
-        train_df['target_streak_length'].quantile(p) for p in percentiles]
+    percentile_values = []
+    if 'target_streak_length' in train_df.columns:
+        percentile_values = [
+            train_df['target_streak_length'].quantile(p) for p in percentiles]
+    else:
+        # Use an approximation if target_streak_length is not available
+        logger.warning(
+            "No target_streak_length column found. Using approximations for cluster descriptions.")
+        # Default values based on common observations
+        percentile_values = [3, 7, 14]
 
     for i in range(len(percentiles) + 1):
         if i == 0:
@@ -194,7 +216,7 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
 
     # Perform CV using a sample of data for each fold
     n_train = len(X_train)
-    for fold, (tr_idx, val_idx) in enumerate(rolling_origin_indices(n_train, eval_folds, gap=lookback_window), 1):
+    for fold, (tr_idx, val_idx) in enumerate(rolling_origin_indices(n_train, eval_folds), 1):
 
         # Ensure validation set is not too large
         if len(val_idx) > 5000:
@@ -309,30 +331,57 @@ def train_model(df: pd.DataFrame, feature_cols: List[str],
 
 def rolling_origin_indices(n_train: int, n_folds: int, min_val_size: int = 1000, gap: int = 0):
     """
-    Generate indices for rolling-origin cross-validation with time series safety.
+    Generate indices for time-series cross-validation using rolling origin approach.
+
+    This approach respects the temporal nature of the data by ensuring that:
+    1. Only past data is used for training
+    2. A gap can be introduced between training and validation to simulate forecasting
+    3. Validation sets represent future data from the training set's perspective
 
     Args:
         n_train: Number of training samples
-        n_folds: Number of folds
-        min_val_size: Minimum size for validation sets
-        gap: Gap between training and validation sets (for feature creation)
+        n_folds: Number of folds for cross-validation
+        min_val_size: Minimum size of validation set
+        gap: Number of samples to skip between training and validation sets
 
     Yields:
-        Tuple of (train_indices, validation_indices)
+        Tuples of (train_indices, validation_indices)
     """
-    fold_size = n_train // n_folds
-    test_size = 5000  # Fixed test size for more consistent evaluation
+    # Validate inputs
+    if n_train <= 0:
+        raise ValueError("n_train must be positive")
+    if n_folds <= 0:
+        raise ValueError("n_folds must be positive")
 
-    for i in range(1, n_folds + 1):
-        train_end = min(fold_size * i, n_train - test_size - gap)
+    # Determine validation set size - at least min_val_size
+    val_size = max(min_val_size, n_train // (n_folds * 2))
+
+    # Calculate fold sizes to ensure all data is used approximately evenly
+    fold_size = (n_train - val_size) // n_folds
+
+    # For each fold
+    for i in range(n_folds):
+        # Calculate how much data is available for this fold
+        if i == n_folds - 1:
+            # Last fold - use all remaining data
+            train_end = n_train - val_size - gap
+        else:
+            # Regular fold
+            train_end = min((i + 1) * fold_size, n_train - val_size - gap)
+
+        # Training data is all data up to train_end
+        train_indices = list(range(0, train_end))
+
+        # Validation data starts after train_end + gap
         val_start = train_end + gap
-        val_end = min(val_start + test_size, n_train)
+        val_end = min(val_start + val_size, n_train)
+        validation_indices = list(range(val_start, val_end))
 
         # Skip fold if validation set is too small
-        if (val_end - val_start) < min_val_size:
+        if len(validation_indices) < min_val_size // 2:
             continue
 
-        yield range(0, train_end), range(val_start, val_end)
+        yield train_indices, validation_indices
 
 
 def best_round(bst, default_rounds: int) -> int:

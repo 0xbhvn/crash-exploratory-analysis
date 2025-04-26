@@ -270,45 +270,38 @@ def prepare_features(df: pd.DataFrame,
                      percentiles: List[float] = [0.25, 0.50, 0.75]
                      ) -> Tuple[pd.DataFrame, List[str], StandardScaler]:
     """
-    Prepare features for machine learning model training.
+    Prepare features for machine learning using streak-based analysis.
 
-    This function creates streak-based features for predicting the length of the next streak.
-    The clustering is done using customizable percentiles of streak lengths.
+    WARNING: This function can create data leakage in a prediction context 
+    because it processes the entire dataset at once. Use prepare_train_test_features instead.
 
     Args:
-        df: DataFrame with game data
-        window: Number of previous streaks to consider (not games)
+        df: DataFrame with game data (Game ID, Bust)
+        window: Number of previous streaks to consider for features
         multiplier_threshold: Threshold for considering a multiplier as a hit
         percentiles: List of percentile boundaries for clustering
 
     Returns:
-        Tuple of (DataFrame with features, list of feature column names, fitted StandardScaler)
+        Tuple of (DataFrame with features and target, list of feature column names, fitted StandardScaler)
     """
-    logger.info(f"Preparing streak-based features with lookback={window}")
+    logger.warning(
+        "Using prepare_features which may create data leakage. Consider using prepare_train_test_features instead.")
+    print_info(f"Preparing streak-based features with lookback={window}")
 
-    # Extract streaks and their properties
+    # Extract streaks
     streak_df = extract_streaks_and_multipliers(df, multiplier_threshold)
 
-    # Create features based on streak patterns
+    # Create features from streaks
     features_df = create_streak_features(streak_df, lookback_window=window)
 
-    # Identify the feature columns (exclude target and metadata columns)
-    metadata_cols = ['streak_number', 'start_game_id', 'end_game_id',
-                     'streak_length', 'hit_multiplier', 'target_streak_length']
-    # Also exclude the multiplier_X columns
-    multiplier_cols = [
-        col for col in features_df.columns if col.startswith('multiplier_')]
-
-    feature_cols = [col for col in features_df.columns
-                    if col not in metadata_cols and col not in multiplier_cols]
-
-    # Add target clustering based on percentiles
+    # Calculate streak length percentiles
+    features_df['target_streak_length'] = features_df['streak_length']
     percentile_values = [
         features_df['target_streak_length'].quantile(p) for p in percentiles]
 
     # Log percentile boundaries
     percentile_info = ", ".join(
-        [f"P{int(p*100)}={val:.1f}" for p, val in zip(percentiles, percentile_values)])
+        [f"P{int(p*100)}={val}" for p, val in zip(percentiles, percentile_values)])
     logger.info(f"Streak length percentile boundaries: {percentile_info}")
 
     # Create conditions and results for clustering
@@ -332,28 +325,37 @@ def prepare_features(df: pd.DataFrame,
             )
         results.append(i)
 
-    # Create clusters (0 to n, where n is the number of percentile boundaries + 1)
+    # Create clusters
     features_df = features_df.copy()  # Avoid fragmentation
-    features_df.loc[:, 'target_cluster'] = np.select(
+    features_df['target_cluster'] = np.select(
         conditions, results, default=np.nan)
 
-    # Feature scaling - create a new DataFrame to avoid modifying the original
-    scaler = StandardScaler()
-    features_df.loc[:, feature_cols] = scaler.fit_transform(
-        features_df[feature_cols])
-
-    # Log cluster counts
-    clusters = list(range(len(percentiles) + 1))
+    # Log cluster distribution
     cluster_counts = []
-    for i in clusters:
+    for i in range(len(percentiles) + 1):
         count = (features_df['target_cluster'] == i).sum()
         percentage = count / len(features_df) * 100
         cluster_counts.append(f"{i}: {count} ({percentage:.1f}%)")
 
     logger.info(
         f"Percentile-based cluster counts: {', '.join(cluster_counts)}")
-    logger.info(
-        f"Final feature matrix shape: {features_df[feature_cols].shape}")
+
+    # Identify the feature columns (exclude target and metadata columns)
+    metadata_cols = ['streak_number', 'start_game_id', 'end_game_id',
+                     'streak_length', 'hit_multiplier', 'target_streak_length']
+    # Also exclude the multiplier_X columns
+    multiplier_cols = [
+        col for col in features_df.columns if col.startswith('multiplier_')]
+
+    feature_cols = [col for col in features_df.columns
+                    if col not in metadata_cols and col not in multiplier_cols
+                    and col != 'target_cluster']  # Explicitly exclude target_cluster
+
+    # Apply scaling to features
+    scaler = StandardScaler()
+    features_df[feature_cols] = scaler.fit_transform(features_df[feature_cols])
+
+    logger.info(f"Final feature matrix shape: {features_df.shape}")
     logger.info(
         f"StandardScaler mean and scale computed for {len(feature_cols)} features")
 
@@ -470,15 +472,34 @@ def prepare_train_test_features(df: pd.DataFrame,
         train_features_df[feature_cols])
 
     # Step 7: Create features for test data separately
+    # IMPORTANT: We need to handle the case where features depend on data from training set
+    # Add buffer rows from training set to ensure features for first test rows are complete
     logger.info("Creating features for test data...")
-    test_features_df = create_streak_features(
-        test_streak_df, lookback_window=window)
+
+    if window > 0:
+        # Take the last 'window' rows from training set as buffer
+        buffer_rows = min(window, len(train_streak_df))
+        buffer_streak_df = train_streak_df.iloc[-buffer_rows:].copy()
+
+        # Combine buffer with test data for feature creation
+        combined_streak_df = pd.concat([buffer_streak_df, test_streak_df])
+
+        # Create features using the combined data
+        combined_features_df = create_streak_features(
+            combined_streak_df, lookback_window=window)
+
+        # Only keep the test portion for the final test dataframe
+        test_features_df = combined_features_df.iloc[buffer_rows:].copy()
+    else:
+        # If no lookback window, just process test data directly
+        test_features_df = create_streak_features(
+            test_streak_df, lookback_window=window)
 
     # Add target streak length to test data
     test_features_df.loc[:,
                          'target_streak_length'] = test_features_df['streak_length']
 
-    # Step 8: Apply the same clustering logic to test data
+    # Step 8: Apply the same clustering logic to test data using TRAINING percentiles
     conditions = []
     results = []
 
@@ -502,20 +523,28 @@ def prepare_train_test_features(df: pd.DataFrame,
         conditions, results, default=np.nan)
 
     # Step 9: Apply the same scaling to test data using the scaler fit on training data
+    for col in feature_cols:
+        if col not in test_features_df.columns:
+            logger.warning(
+                f"Missing feature column in test set: {col}. Adding with zeros.")
+            test_features_df[col] = 0
+
+    # Fill any NaN values with zeros
+    test_features_df[feature_cols] = test_features_df[feature_cols].fillna(0)
+
+    # Transform test features using the scaler fitted on training data
     test_features_df.loc[:, feature_cols] = scaler.transform(
         test_features_df[feature_cols])
 
     # Log cluster counts for both sets
-    clusters = list(range(len(percentiles) + 1))
-
     train_cluster_counts = []
-    for i in clusters:
+    for i in range(len(percentiles) + 1):
         count = (train_features_df['target_cluster'] == i).sum()
         percentage = count / len(train_features_df) * 100
         train_cluster_counts.append(f"{i}: {count} ({percentage:.1f}%)")
 
     test_cluster_counts = []
-    for i in clusters:
+    for i in range(len(percentiles) + 1):
         count = (test_features_df['target_cluster'] == i).sum()
         percentage = count / len(test_features_df) * 100
         test_cluster_counts.append(f"{i}: {count} ({percentage:.1f}%)")
