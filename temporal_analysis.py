@@ -729,34 +729,30 @@ def analyze_temporal_performance(features_df, y_pred, test_indices, percentile_v
     # Display confusion matrix as rich table
     print_info("Confusion Matrix Table:")
     cm_table = create_table("Confusion Matrix",
-                            ["Actual\\Predicted"] + [f"Pred {i}: {label}" for i, label in enumerate(class_labels)] + ["Row Total"])
+                            ["Actual\\Predicted"] + [f"Pred {i}: {label}" for i, label in enumerate(class_labels)])
 
-    # Calculate row totals for percentages
-    row_totals = cm.sum(axis=1)
+    # Calculate column totals for prediction accuracy percentages
+    col_totals = cm.sum(axis=0)
+    total_sum = cm.sum()
 
     # Add rows with counts and percentages
     for i, (row, label) in enumerate(zip(cm, class_labels)):
         row_data = [f"Act {i}: {label}"]
         for j, count in enumerate(row):
-            percentage = (count / row_totals[i]) * \
-                100 if row_totals[i] > 0 else 0
-            cell_text = f"{count} ({percentage:.1f}%)"
+            if i == j:  # Diagonal element - show prediction accuracy
+                prediction_accuracy = (
+                    count / col_totals[j]) * 100 if col_totals[j] > 0 else 0
+                cell_text = f"{count} ({prediction_accuracy:.1f}% correct)"
+            else:
+                cell_text = f"{count}"
             row_data.append(cell_text)
-        # Add row total with percentage of the entire dataset
-        total_sum = cm.sum()
-        row_percentage = (row_totals[i] / total_sum) * 100
-        row_data.append(f"{row_totals[i]} ({row_percentage:.1f}%)")
         add_table_row(cm_table, row_data)
 
     # Add a totals row
-    col_totals = cm.sum(axis=0)
-    total_sum = cm.sum()
-    total_row = ["Total"]
+    total_row = ["Total Predictions"]
     for col_total in col_totals:
         percentage = (col_total / total_sum) * 100
         total_row.append(f"{col_total} ({percentage:.1f}%)")
-    # Add grand total
-    total_row.append(f"{total_sum} (100.0%)")
     add_table_row(cm_table, total_row)
 
     display_table(cm_table)

@@ -252,66 +252,6 @@ def display_output_summary(output_dir="./output"):
         except Exception as e:
             print_info(f"Could not read metrics file: {str(e)}")
 
-    # Display confusion matrix from model file if available
-    model_path = os.path.join(output_dir, "temporal_model.pkl")
-    if os.path.exists(model_path):
-        try:
-            model_bundle = joblib.load(model_path)
-
-            # If the model bundle has test labels and predictions, create a confusion matrix
-            if 'test_labels' in model_bundle and 'predictions' in model_bundle:
-                print_info("Confusion Matrix:")
-                from sklearn.metrics import confusion_matrix
-
-                y_test = model_bundle['test_labels']
-                y_pred = model_bundle['predictions']
-
-                cm = confusion_matrix(y_test, y_pred)
-
-                # Define class labels
-                class_labels = [
-                    "Bottom 25% (1-3)",
-                    "25-50% (4-7)",
-                    "50-75% (8-14)",
-                    "Top 25% (>14)"
-                ]
-
-                # Create confusion matrix table
-                cm_table = create_table("Confusion Matrix",
-                                        ["Actual\\Predicted"] + [f"Pred {i}: {label}" for i, label in enumerate(class_labels)] + ["Row Total"])
-
-                # Calculate row totals for percentages
-                row_totals = cm.sum(axis=1)
-
-                # Add rows with counts and percentages
-                for i, (row, label) in enumerate(zip(cm, class_labels)):
-                    row_data = [f"Act {i}: {label}"]
-                    for j, count in enumerate(row):
-                        percentage = (
-                            count / row_totals[i]) * 100 if row_totals[i] > 0 else 0
-                        cell_text = f"{count} ({percentage:.1f}%)"
-                        row_data.append(cell_text)
-                    # Add row total with percentage of the entire dataset
-                    total_sum = cm.sum()
-                    row_percentage = (row_totals[i] / total_sum) * 100
-                    row_data.append(f"{row_totals[i]} ({row_percentage:.1f}%)")
-                    add_table_row(cm_table, row_data)
-
-                # Add a totals row
-                col_totals = cm.sum(axis=0)
-                total_sum = cm.sum()
-                total_row = ["Total"]
-                for col_total in col_totals:
-                    percentage = (col_total / total_sum) * 100
-                    total_row.append(f"{col_total} ({percentage:.1f}%)")
-                # Add grand total
-                total_row.append(f"{total_sum} (100.0%)")
-                add_table_row(cm_table, total_row)
-
-                display_table(cm_table)
-        except Exception as e:
-            print_info(f"Could not display confusion matrix: {str(e)}")
-
     print_success("Summary display complete")
 
 
