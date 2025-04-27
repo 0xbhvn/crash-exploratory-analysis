@@ -29,6 +29,7 @@ from sklearn.metrics import confusion_matrix
 import seaborn as sns
 from sklearn.model_selection import cross_val_score
 from sklearn.ensemble import RandomForestClassifier
+from imblearn.over_sampling import SMOTE  # Added for synthetic samples
 
 # Import rich logging
 from logger_config import (
@@ -141,6 +142,12 @@ def create_temporal_features(streak_df: pd.DataFrame, lookback_window: int = 5) 
             features_df[f'long_pct_{window}'] = ((streak_df['streak_length'].shift(1) > 14)
                                                  .rolling(window, min_periods=1).mean())
 
+            # New feature: rolling trend of hit multipliers
+            features_df[f'hit_mult_mean_{window}'] = streak_df['hit_multiplier'].shift(
+                1).rolling(window, min_periods=1).mean()
+            features_df[f'hit_mult_trend_{window}'] = features_df[f'hit_mult_mean_{window}'] - \
+                streak_df['hit_multiplier'].shift(window+1)
+
     # Calculate streak patterns (transitions between streak lengths)
     features_df['streak_category'] = pd.cut(
         streak_df['streak_length'],
@@ -174,6 +181,28 @@ def create_temporal_features(streak_df: pd.DataFrame, lookback_window: int = 5) 
     features_df['category_run_length'] = run_counts
     features_df['prev_run_length'] = features_df['category_run_length'].shift(
         1).fillna(0).astype(int)
+
+    # New feature: time-since-last-category
+    for category in ['short', 'medium_short', 'medium_long', 'long']:
+        # Initialize counters
+        counter = []
+        last_seen = -1
+
+        # Iterate through all rows in forward order
+        for i, prev_cat in enumerate(features_df['prev_category']):
+            if pd.isna(prev_cat):
+                # If prev_category is NaN (first row), set counter to a high value
+                counter.append(99)
+            elif prev_cat == category:
+                # Reset counter if category matches
+                last_seen = i
+                counter.append(0)
+            else:
+                # Increment counter by 1 if seen before, else high value
+                counter.append(i - last_seen if last_seen >= 0 else 99)
+
+        # Add the counter as a feature
+        features_df[f'time_since_{category}'] = counter
 
     # Add day of week and hour features (from Game ID, if available)
     if 'timestamp' in streak_df.columns:
@@ -252,7 +281,7 @@ def create_temporal_features(streak_df: pd.DataFrame, lookback_window: int = 5) 
         conditions, results, default=np.nan)
 
     # Create a table showing the temporal features
-    feature_table = create_table("Temporal Feature Examples (First 5)",
+    feature_table = create_table("Temporal Feature Examples (First 10)",
                                  ["Feature", "Description", "Type"])
 
     # Add some example features to the table
@@ -266,6 +295,16 @@ def create_temporal_features(streak_df: pd.DataFrame, lookback_window: int = 5) 
         "rolling_mean_5", "Average of the last 5 streak lengths", "Rolling"])
     add_table_row(feature_table, [
         "short_pct_5", "Percentage of short streaks in last 5", "Pattern"])
+    add_table_row(feature_table, [
+        "hit_mult_mean_5", "Average of the last 5 hit multipliers", "Rolling"])
+    add_table_row(feature_table, [
+        "hit_mult_trend_5", "Trend in hit multipliers over last 5", "Trend"])
+    add_table_row(feature_table, [
+        "time_since_long", "Streaks since last long streak", "Pattern"])
+    add_table_row(feature_table, [
+        "category_run_length", "Count of consecutive streaks in same category", "Pattern"])
+    add_table_row(feature_table, [
+        "same_as_prev", "Whether current category same as previous", "Pattern"])
 
     display_table(feature_table)
 
@@ -346,7 +385,10 @@ def temporal_train_test_split(features_df: pd.DataFrame, feature_cols: List[str]
     return X_train, y_train, X_test, y_test, test_indices
 
 
-def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_dir):
+def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_dir,
+                         use_class_weights=False, weight_scale=1.1, use_smote=False, smote_k_neighbors=5,
+                         max_depth=6, eta=0.05, num_rounds=1000, early_stopping=100,
+                         gamma=0, min_child_weight=1, reg_lambda=1.0, subsample=0.8, colsample_bytree=0.8):
     """
     Train an XGBoost model with proper temporal validation.
 
@@ -357,22 +399,123 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
         y_test: Testing targets
         feature_cols: Feature column names
         output_dir: Directory to save model and outputs
+        use_class_weights: Whether to use class weights to improve recall for minority classes
+        weight_scale: Scale factor for class weights (higher values give more weight to minority classes)
+        use_smote: Whether to use SMOTE to generate synthetic examples
+        smote_k_neighbors: Number of nearest neighbors to use for SMOTE
+        max_depth: Maximum depth of XGBoost trees
+        eta: Learning rate for XGBoost
+        num_rounds: Maximum number of boosting rounds
+        early_stopping: Early stopping rounds
+        gamma: Minimum loss reduction for further partition
+        min_child_weight: Minimum sum of instance weight in child
+        reg_lambda: L2 regularization
+        subsample: Subsample ratio of training data
+        colsample_bytree: Subsample ratio of columns per tree
 
     Returns:
         Trained model and model bundle with metadata
     """
     print_info("Training XGBoost model with proper temporal validation")
 
+    # Apply SMOTE if requested (before scaling)
+    if use_smote:
+        print_info(
+            f"Applying SMOTE to generate synthetic examples (k_neighbors={smote_k_neighbors})")
+        original_shape = X_train.shape
+        smote = SMOTE(random_state=42, k_neighbors=smote_k_neighbors)
+        X_train_resampled, y_train_resampled = smote.fit_resample(
+            X_train, y_train)
+
+        # Display resampling stats
+        original_counts = pd.Series(y_train).value_counts().sort_index()
+        resampled_counts = pd.Series(
+            y_train_resampled).value_counts().sort_index()
+
+        smote_table = create_table("SMOTE Resampling Results",
+                                   ["Class", "Original Count", "Resampled Count", "Change"])
+
+        for cls in sorted(resampled_counts.index):
+            orig = original_counts.get(cls, 0)
+            new = resampled_counts.get(cls, 0)
+            change = ((new - orig) / orig * 100) if orig > 0 else float('inf')
+
+            add_table_row(smote_table, [
+                f"Class {cls}",
+                f"{orig}",
+                f"{new}",
+                f"{change:+.1f}%"
+            ])
+
+        add_table_row(smote_table, [
+            "Total",
+            f"{len(y_train)}",
+            f"{len(y_train_resampled)}",
+            f"{(len(y_train_resampled) - len(y_train)) / len(y_train) * 100:+.1f}%"
+        ])
+
+        display_table(smote_table)
+
+        # Update training data
+        X_train = X_train_resampled
+        y_train = y_train_resampled
+
+        print_info(
+            f"Reshaped training data from {original_shape} to {X_train.shape}")
+
     # Scale features for better model performance
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
+    # Prepare class weights if requested
+    sample_weights = None
+    class_weight_dict = None
+
+    if use_class_weights:
+        print_info(f"Using class weights with scale factor {weight_scale}")
+
+        # Count class frequencies
+        class_counts = np.bincount(y_train.astype(np.int64))
+        total_samples = len(y_train)
+        n_classes = len(class_counts)
+
+        # Calculate inverse frequency weights
+        class_weight_dict = {}
+        class_freqs = class_counts / total_samples
+
+        for i in range(n_classes):
+            # Use inverse frequency weighting adjusted by scale factor
+            # Higher scale means more weight to rare classes
+            class_weight = (1 / class_freqs[i]) * weight_scale
+            class_weight_dict[i] = class_weight
+
+        # No normalization step - this allows weight_scale to have direct impact
+        # Note: Previously we normalized weights to average 1, which neutralized weight_scale
+
+        # Create sample weights for each training instance
+        sample_weights = np.array([class_weight_dict[y] for y in y_train])
+
+        # Display class weights
+        weight_table = create_table(
+            "Class Weights", ["Class", "Count", "Frequency", "Weight"])
+        for cls, weight in sorted(class_weight_dict.items()):
+            count = class_counts[cls]
+            freq = class_freqs[cls]
+            add_table_row(weight_table, [
+                f"Class {cls}",
+                f"{count}",
+                f"{freq:.4f}",
+                f"{weight:.4f}"
+            ])
+        display_table(weight_table)
+
     # Create XGBoost data matrices
-    dtrain = xgb.DMatrix(X_train_scaled, label=y_train, feature_names=[
-                         f'f{i}' for i in range(X_train_scaled.shape[1])])
-    dtest = xgb.DMatrix(X_test_scaled, label=y_test, feature_names=[
-                        f'f{i}' for i in range(X_test_scaled.shape[1])])
+    dtrain = xgb.DMatrix(X_train_scaled, label=y_train,
+                         weight=sample_weights,  # Add sample weights if using class weights
+                         feature_names=[f'f{i}' for i in range(X_train_scaled.shape[1])])
+    dtest = xgb.DMatrix(X_test_scaled, label=y_test,
+                        feature_names=[f'f{i}' for i in range(X_test_scaled.shape[1])])
 
     # Set parameters for multiclass classification
     num_classes = len(np.unique(y_train))
@@ -380,10 +523,13 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
     params = {
         'objective': 'multi:softprob',
         'num_class': num_classes,
-        'max_depth': 6,
-        'eta': 0.05,
-        'subsample': 0.8,
-        'colsample_bytree': 0.8,
+        'max_depth': max_depth,
+        'eta': eta,
+        'gamma': gamma,
+        'min_child_weight': min_child_weight,
+        'lambda': reg_lambda,
+        'subsample': subsample,
+        'colsample_bytree': colsample_bytree,
         'eval_metric': 'mlogloss',
         'seed': 42
     }
@@ -397,17 +543,15 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
     # Train with early stopping
     print_info("Training model with validation-based early stopping")
 
-    # Fix: Pass evals as keyword argument
+    # Pass evals as keyword argument
     evallist = [(dtrain, 'training'), (dtest, 'validation')]
-    num_rounds = 1000
-    early_stopping = 100
 
     # Train the model
     bst = xgb.train(
         params,
         dtrain,
         num_rounds,
-        evals=evallist,  # Fixed: Pass as keyword argument
+        evals=evallist,
         early_stopping_rounds=early_stopping,
         verbose_eval=100
     )
@@ -480,6 +624,14 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
     importance_df['Percentage'] = (
         importance_df['Importance'] / total_importance * 100)
 
+    # Print feature name mappings
+    print_info("Feature ID to Feature Name Mapping:")
+    feature_map_table = create_table("Feature Name Mapping", [
+                                     "Feature ID", "Feature Name"])
+    for i, col in enumerate(feature_cols):
+        add_table_row(feature_map_table, [f"f{i}", col])
+    display_table(feature_map_table)
+
     # Display top features
     top_n = min(10, len(importance_df))
     top_features = importance_df.head(top_n)
@@ -489,17 +641,28 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
                                     ["Feature", "Importance", "% of Total"])
 
     for _, row in top_features.iterrows():
+        # Try to get the real feature name from feature mapping
+        feature_id = row['Feature']
+        feature_idx = int(feature_id.replace('f', '')
+                          ) if feature_id.startswith('f') else None
+        feature_name = feature_cols[feature_idx] if feature_idx is not None and feature_idx < len(
+            feature_cols) else feature_id
+
         add_table_row(importance_table, [
-            row['Feature'],
+            f"{feature_id} ({feature_name})",
             f"{row['Importance']:.2f}",
             f"{row['Percentage']:.2f}%"
         ])
 
     display_table(importance_table)
 
-    # Plot feature importance
+    # Plot feature importance with real names
     plt.figure(figsize=(12, 8))
-    plt.barh(top_features['Feature'], top_features['Importance'])
+    importance_with_names = top_features.copy()
+    importance_with_names['DisplayName'] = importance_with_names['Feature'].apply(
+        lambda f: f"{f} ({feature_cols[int(f.replace('f', ''))]})" if f.startswith('f') else f)
+    plt.barh(importance_with_names['DisplayName'],
+             importance_with_names['Importance'])
     plt.xlabel('Importance (Gain)')
     plt.ylabel('Feature')
     plt.title(f'Top {top_n} Feature Importance')
@@ -529,7 +692,10 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
         'train_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'test_indices': X_test.index.tolist(),
         'test_labels': y_test.tolist(),
-        'predictions': y_pred.tolist()
+        'predictions': y_pred.tolist(),
+        'class_weights': class_weight_dict,
+        'used_smote': use_smote,
+        'smote_params': {'k_neighbors': smote_k_neighbors} if use_smote else None
     }
 
     # Save the model bundle
@@ -774,6 +940,225 @@ def analyze_temporal_performance(features_df, y_pred, test_indices, percentile_v
     return performance_metrics
 
 
+def analyze_recall_improvements(y_test, y_pred, output_dir):
+    """
+    Analyze and visualize recall improvements, especially for long streaks.
+
+    Args:
+        y_test: True labels
+        y_pred: Predicted labels
+        output_dir: Directory to save outputs
+    """
+    print_info("Analyzing recall improvements by class")
+
+    # Calculate precision, recall, and F1 for each class
+    report = classification_report(y_test, y_pred, output_dict=True)
+
+    # Extract metrics for each class
+    classes = []
+    precisions = []
+    recalls = []
+    f1_scores = []
+    supports = []
+
+    for cls in sorted([k for k in report.keys() if k not in ['accuracy', 'macro avg', 'weighted avg']]):
+        classes.append(f"Class {cls}")
+        precisions.append(report[cls]['precision'])
+        recalls.append(report[cls]['recall'])
+        f1_scores.append(report[cls]['f1-score'])
+        supports.append(report[cls]['support'])
+
+    # Calculate distribution metrics
+    actual_counts = pd.Series(y_test).value_counts().sort_index()
+    pred_counts = pd.Series(y_pred).value_counts().sort_index()
+
+    # Calculate percentages
+    total_actual = len(y_test)
+    total_pred = len(y_pred)
+    actual_pcts = actual_counts / total_actual * 100
+    pred_pcts = pred_counts / total_pred * 100
+
+    # Check for prediction skew
+    skew_table = create_table("Prediction Balance Check",
+                              ["Class", "Actual %", "Predicted %", "Difference", "Status"])
+
+    has_skew = False
+    for cls in sorted(set(actual_counts.index.union(pred_counts.index))):
+        act_pct = actual_pcts.get(cls, 0)
+        pred_pct = pred_pcts.get(cls, 0)
+        diff = pred_pct - act_pct
+        abs_diff = abs(diff)
+
+        # Determine status
+        if abs_diff < 5:
+            status = "✓ Good"
+        elif abs_diff < 10:
+            status = "⚠ Fair"
+        else:
+            status = "✗ Skewed"
+            has_skew = True
+
+        add_table_row(skew_table, [
+            f"Class {cls}",
+            f"{act_pct:.1f}%",
+            f"{pred_pct:.1f}%",
+            f"{diff:+.1f}%",
+            status
+        ])
+
+    display_table(skew_table)
+
+    if has_skew:
+        print_warning(
+            "Model predictions show class imbalance compared to actual distribution.")
+        print_info(
+            "Consider adjusting class weights or using a different balancing method.")
+    else:
+        print_success(
+            "Model predictions match the actual class distribution well.")
+
+    # Create a comparison bar chart
+    plt.figure(figsize=(12, 8))
+    width = 0.25
+    x = np.arange(len(classes))
+
+    plt.bar(x - width, precisions, width, label='Precision')
+    plt.bar(x, recalls, width, label='Recall')
+    plt.bar(x + width, f1_scores, width, label='F1-Score')
+
+    plt.xlabel('Class')
+    plt.ylabel('Score')
+    plt.title('Precision, Recall, and F1-Score by Class')
+    plt.xticks(x, classes)
+    plt.ylim(0, 1)
+    plt.legend()
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+
+    # Add data labels
+    for i, v in enumerate(precisions):
+        plt.text(i - width, v + 0.02, f'{v:.2f}', ha='center')
+    for i, v in enumerate(recalls):
+        plt.text(i, v + 0.02, f'{v:.2f}', ha='center')
+    for i, v in enumerate(f1_scores):
+        plt.text(i + width, v + 0.02, f'{v:.2f}', ha='center')
+
+    # Add class descriptions at the bottom
+    class_descriptions = [
+        "Short (1-3)",
+        "Medium-Short (4-7)",
+        "Medium-Long (8-14)",
+        "Long (>14)"
+    ]
+
+    for i, desc in enumerate(class_descriptions):
+        plt.text(i, -0.05, desc, ha='center', fontsize=9)
+
+    # Add the actual vs predicted class distribution
+    distribution_ax = plt.axes([0.15, 0.15, 0.3, 0.2])  # inset axes
+    dist_x = np.arange(len(classes))
+    dist_width = 0.35
+
+    # Get actual and predicted percentages
+    act_pct_values = []
+    pred_pct_values = []
+
+    for cls in range(len(classes)):
+        act_pct_values.append(actual_pcts.get(float(cls), 0))
+        pred_pct_values.append(pred_pcts.get(float(cls), 0))
+
+    distribution_ax.bar(dist_x - dist_width/2, act_pct_values,
+                        dist_width, label='Actual %')
+    distribution_ax.bar(dist_x + dist_width/2, pred_pct_values,
+                        dist_width, label='Predicted %')
+    distribution_ax.set_title('Class Distribution')
+    distribution_ax.set_ylim(
+        0, max(max(act_pct_values), max(pred_pct_values)) * 1.2)
+    distribution_ax.set_xticks(dist_x)
+    distribution_ax.set_xticklabels([f"{i}" for i in range(len(classes))])
+    distribution_ax.legend(fontsize='small')
+
+    # Save the plot
+    os.makedirs(output_dir, exist_ok=True)
+    plot_path = os.path.join(output_dir, 'recall_improvements.png')
+    plt.savefig(plot_path, bbox_inches='tight')
+    plt.close()
+
+    print_info(f"Saved recall improvement visualization to {plot_path}")
+
+    # Create a summary table of key findings
+    insights_table = create_table("Key Recall Insights", [
+                                  "Class", "Metric", "Value", "Insight"])
+
+    # Find the class with the highest recall
+    best_recall_idx = np.argmax(recalls)
+    add_table_row(insights_table, [
+        f"Class {best_recall_idx}",
+        "Recall",
+        f"{recalls[best_recall_idx]:.4f}",
+        f"Best recall achieved for {class_descriptions[best_recall_idx]}"
+    ])
+
+    # Find the class with the lowest recall
+    worst_recall_idx = np.argmin(recalls)
+    add_table_row(insights_table, [
+        f"Class {worst_recall_idx}",
+        "Recall",
+        f"{recalls[worst_recall_idx]:.4f}",
+        f"Lowest recall for {class_descriptions[worst_recall_idx]}"
+    ])
+
+    # Find extreme precision values
+    high_prec_idx = np.argmax(precisions)
+    if precisions[high_prec_idx] > 0.9 and recalls[high_prec_idx] < 0.4:
+        add_table_row(insights_table, [
+            f"Class {high_prec_idx}",
+            "Prec/Recall",
+            f"{precisions[high_prec_idx]:.4f}/{recalls[high_prec_idx]:.4f}",
+            f"Warning: Very high precision but low recall (conservative predictions)"
+        ])
+
+    # Check for balanced predictions
+    balanced_idx = np.argmin(np.abs(np.array(precisions) - np.array(recalls)))
+    add_table_row(insights_table, [
+        f"Class {balanced_idx}",
+        "Prec/Recall",
+        f"{precisions[balanced_idx]:.4f}/{recalls[balanced_idx]:.4f}",
+        f"Most balanced precision-recall for {class_descriptions[balanced_idx]}"
+    ])
+
+    display_table(insights_table)
+
+    # Show recommended next steps based on analysis
+    next_steps_table = create_table("Recommended Next Steps", [
+                                    "Observation", "Action"])
+
+    # Check for imbalanced distribution
+    if has_skew:
+        add_table_row(next_steps_table, [
+            "Prediction distribution is skewed",
+            "Reduce class weight scale or try a different balancing method"
+        ])
+
+    # Check for very high precision / low recall
+    if max(precisions) > 0.9 and min(recalls) < 0.3:
+        add_table_row(next_steps_table, [
+            "Extreme precision-recall trade-off",
+            "Adjust decision threshold or try direct calibration of probabilities"
+        ])
+
+    # Check for poor F1 scores
+    if min(f1_scores) < 0.4:
+        worst_f1_idx = np.argmin(f1_scores)
+        add_table_row(next_steps_table, [
+            f"Low F1 score for Class {worst_f1_idx}",
+            f"Focus on improving features predictive of {class_descriptions[worst_f1_idx]} streaks"
+        ])
+
+    display_table(next_steps_table)
+
+    return report
+
+
 def make_temporal_prediction(model_bundle, recent_streaks, temporal_idx_start=None):
     """
     Make predictions using the temporal model for new streak data.
@@ -879,6 +1264,50 @@ def parse_arguments():
     parser.add_argument('--num_streaks', type=int, default=None,
                         help='Number of most recent streaks to use for prediction (prediction mode only)')
 
+    # Create a mutually exclusive group for class balancing methods
+    class_balance_group = parser.add_mutually_exclusive_group()
+
+    class_balance_group.add_argument('--use_class_weights', action='store_true',
+                                     help='Use class weights to improve recall for minority classes')
+
+    parser.add_argument('--weight_scale', type=float, default=1.1,
+                        help='Scale factor for class weights (higher values give more weight to minority classes)')
+
+    class_balance_group.add_argument('--use_smote', action='store_true',
+                                     help='Use SMOTE to generate synthetic examples for minority classes')
+
+    parser.add_argument('--smote_k_neighbors', type=int, default=5,
+                        help='Number of nearest neighbors to use for SMOTE (default: 5)')
+
+    # Model parameters
+    parser.add_argument('--max_depth', type=int, default=6,
+                        help='Maximum depth of XGBoost trees (default: 6)')
+
+    # New hyperparameters for regularization
+    parser.add_argument('--eta', type=float, default=0.05,
+                        help='Learning rate for XGBoost (default: 0.05, recommended range: 0.03-0.05)')
+
+    parser.add_argument('--num_rounds', type=int, default=1000,
+                        help='Maximum number of boosting rounds (default: 1000)')
+
+    parser.add_argument('--early_stopping', type=int, default=100,
+                        help='Early stopping rounds (default: 100)')
+
+    parser.add_argument('--gamma', type=float, default=0,
+                        help='Minimum loss reduction for further partition (default: 0, recommended for tuning: 0.5-1.0)')
+
+    parser.add_argument('--min_child_weight', type=float, default=1,
+                        help='Minimum sum of instance weight in child (default: 1, recommended for tuning: 1-5)')
+
+    parser.add_argument('--reg_lambda', type=float, default=1.0,
+                        help='L2 regularization (default: 1.0, recommended for tuning: 1.0-1.5)')
+
+    parser.add_argument('--subsample', type=float, default=0.8,
+                        help='Subsample ratio of training data (default: 0.8)')
+
+    parser.add_argument('--colsample_bytree', type=float, default=0.8,
+                        help='Subsample ratio of columns per tree (default: 0.8)')
+
     return parser.parse_args()
 
 
@@ -894,6 +1323,13 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
 
+    # Double check - warn if both methods are somehow selected
+    if args.use_class_weights and args.use_smote:
+        print_warning(
+            "WARNING: Both class weights and SMOTE are enabled. This can cause extreme prediction bias.")
+        print_warning("Consider using only one class balancing method.")
+        print_info("Continuing with both methods enabled as requested...")
+
     try:
         # Load the data
         streak_df = load_data(args.input, args.multiplier_threshold)
@@ -903,19 +1339,74 @@ def main():
             features_df, feature_cols, percentile_values = create_temporal_features(
                 streak_df, lookback_window=args.lookback)
 
+            # Print total feature count and newly added features
+            new_features = [
+                col for col in feature_cols
+                if col.startswith('hit_mult_') or col.startswith('time_since_')
+            ]
+
+            if len(new_features) > 0:
+                print_info(
+                    f"Added {len(new_features)} new features: {', '.join(new_features[:5])}...")
+
+            # Display model configuration
+            print_panel(
+                f"Model Configuration:\n"
+                f"- Max Tree Depth: {args.max_depth}\n"
+                f"- Learning Rate (eta): {args.eta}\n"
+                f"- Max Rounds: {args.num_rounds} (early stop: {args.early_stopping})\n"
+                f"- Regularization: gamma={args.gamma}, lambda={args.reg_lambda}, min_child_weight={args.min_child_weight}\n"
+                f"- Sampling: subsample={args.subsample}, colsample_bytree={args.colsample_bytree}\n"
+                f"- Class Weights: {'Yes' if args.use_class_weights else 'No'}\n"
+                f"- Weight Scale: {args.weight_scale if args.use_class_weights else 'N/A'}\n"
+                f"- SMOTE: {'Yes' if args.use_smote else 'No'}\n"
+                f"- Features: {len(feature_cols)} temporal features",
+                title="Configuration",
+                style="cyan"
+            )
+
             # Perform temporal train-test split
             X_train, y_train, X_test, y_test, test_indices = temporal_train_test_split(
                 features_df, feature_cols, test_size=args.test_size)
 
+            # Print class balancing strategy information
+            if args.use_class_weights:
+                print_info(
+                    f"Class balancing strategy: Using class weights (scale={args.weight_scale})")
+            elif args.use_smote:
+                print_info(
+                    f"Class balancing strategy: Using SMOTE (k_neighbors={args.smote_k_neighbors})")
+            else:
+                print_info(
+                    "Class balancing strategy: None (using original class distribution)")
+
             # Train temporal model
             model, model_bundle = train_temporal_model(
-                X_train, y_train, X_test, y_test, feature_cols, args.output_dir)
+                X_train, y_train, X_test, y_test, feature_cols, args.output_dir,
+                use_class_weights=args.use_class_weights,
+                weight_scale=args.weight_scale,
+                use_smote=args.use_smote,
+                smote_k_neighbors=args.smote_k_neighbors,
+                max_depth=args.max_depth,
+                eta=args.eta,
+                num_rounds=args.num_rounds,
+                early_stopping=args.early_stopping,
+                gamma=args.gamma,
+                min_child_weight=args.min_child_weight,
+                reg_lambda=args.reg_lambda,
+                subsample=args.subsample,
+                colsample_bytree=args.colsample_bytree)
 
             # Get predictions on test set
             X_test_scaled = model_bundle['scaler'].transform(X_test)
             dtest = xgb.DMatrix(X_test_scaled, feature_names=[
                                 f'f{i}' for i in range(X_test_scaled.shape[1])])
             y_pred = np.argmax(model.predict(dtest), axis=1)
+
+            # Analyze recall improvements
+            if args.use_class_weights or args.use_smote:
+                report = analyze_recall_improvements(
+                    y_test, y_pred, args.output_dir)
 
             # Analyze temporal performance
             analyze_temporal_performance(

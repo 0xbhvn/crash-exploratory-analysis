@@ -127,6 +127,42 @@ This will:
 3. Check for distribution drift
 4. Retrain the model if drift is detected
 
+### Temporal Analysis
+
+To analyze temporal patterns:
+
+```bash
+python temporal_analysis.py \
+  --mode train \
+  --input games.csv \
+  --use_class_weights --weight_scale 1.25 \
+  --max_depth 8 \
+  --eta 0.03 \
+  --num_rounds 1200 --early_stopping 150 \
+  --gamma 1 --reg_lambda 1.2 --min_child_weight 3 \
+  --subsample 0.8 --colsample_bytree 0.8
+```
+
+This will:
+
+1. Train a model on the training data
+2. Evaluate the model on the test set
+3. Save the model and evaluation results
+
+### Predicting Streak Lengths
+
+To predict streak lengths:
+
+```bash
+python temporal_analysis.py --mode predict --input games.csv --model_path xgb_model.pkl
+```
+
+This will:
+
+1. Load the trained model
+2. Make predictions on the input data
+3. Save the predictions
+
 ## Command Line Arguments
 
 - `--input`: Path to input CSV file with Game ID and Bust columns (default: games.csv)
