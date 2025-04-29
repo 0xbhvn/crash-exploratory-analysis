@@ -8,15 +8,28 @@ alwaysApply: true
 This project analyzes crash game data to predict streak lengths before 10× multipliers. Here's the key file structure:
 
 ## Main Components
-
+| temporal
+|- [__init__.py](mdc:temporal/__init__.py)
+|- [app.py](mdc:temporal/app.py)
+|- [deploy.py](mdc:temporal/deploy.py)
+|- [evaluation.py](mdc:temporal/evaluation.py)
+|- [features.py](mdc:temporal/features.py)
+|- [loader.py](mdc:temporal/loader.py)
+|- [prediction.py](mdc:temporal/prediction.py)
+|- [splitting.py](mdc:temporal/splitting.py)
+|- [training.py](mdc:temporal/training.py)
+|- [true_predict.py](mdc:temporal/true_predict.py)
+|- examples
+|-- [__init__.py](mdc:temporal/examples/__init__.py)
+|-- [next_streak_prediction.py](mdc:temporal/examples/next_streak_prediction.py)
+| utils
+|- [__init__.py](mdc:utils/__init__.py)
+|- [logger_config.py](mdc:utils/logger_config.py)
+|- [rich_summary.py](mdc:utils/rich_summary.py)
 - [main.py](mdc:main.py): The entry point for the application, handles command-line arguments and orchestrates the analysis workflow.
-- [analyzer.py](mdc:analyzer.py): Core `CrashStreakAnalyzer` class that coordinates the analysis pipeline.
 - [data_processing.py](mdc:data_processing.py): Handles data loading, cleaning, and feature engineering.
-- [modeling.py](mdc:modeling.py): Implements model training, evaluation, and prediction functionality.
-- [visualization.py](mdc:visualization.py): Creates plots and visualizations of the results.
 - [logger_config.py](mdc:logger_config.py): Rich logging configuration with tables, panels, and formatted output.
 - [fetch_data.py](mdc:fetch_data.py): Database connection to fetch game data.
-- [daily_updates.py](mdc:daily_updates.py): Model update functionality for new data, including drift detection.
 
 ## Data Flow
 

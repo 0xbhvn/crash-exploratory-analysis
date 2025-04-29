@@ -1,0 +1,57 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Crash 10× Streak Analysis Project Structure
+
+This project analyzes crash game data to predict streak lengths before 10× multipliers. Here's the key file structure:
+
+## Main Components
+- [main.py](mdc:main.py): The entry point for the application, handles command-line arguments and orchestrates the analysis workflow.
+- [data_processing.py](mdc:data_processing.py): Handles data loading, cleaning, and feature engineering.
+- [fetch_data.py](mdc:fetch_data.py): Database connection to fetch game data.
+- [games.csv](mdc:games.csv): Raw game data for analysis.
+- [requirements.txt](mdc:requirements.txt): Python dependencies required for the project.
+
+## Temporal Module
+The `temporal` directory contains specialized modules for the temporal aspects of streak analysis:
+- [app.py](mdc:temporal/app.py): Application logic for the temporal analysis.
+- [deploy.py](mdc:temporal/deploy.py): Deployment utilities for the prediction system.
+- [evaluation.py](mdc:temporal/evaluation.py): Model evaluation metrics and visualization.
+- [features.py](mdc:temporal/features.py): Feature engineering for temporal data.
+- [loader.py](mdc:temporal/loader.py): Data loading utilities.
+- [prediction.py](mdc:temporal/prediction.py): Prediction implementation for streak lengths.
+- [splitting.py](mdc:temporal/splitting.py): Data splitting strategies for time series.
+- [training.py](mdc:temporal/training.py): Model training procedures.
+- [true_predict.py](mdc:temporal/true_predict.py): Real-time prediction implementation.
+
+## Utilities
+- [utils/](mdc:utils): Utility functions and helper modules.
+
+## Documentation
+- [README.md](mdc:README.md): Project overview and setup instructions.
+- [future_roadmap.md](mdc:future_roadmap.md): Planned future enhancements.
+- [prediction.md](mdc:prediction.md): Documentation of prediction methodology.
+- [action-plan.yaml](mdc:action-plan.yaml): Structured plan for project execution.
+
+## Directory Structure
+- `/crash_env/`: Python virtual environment with all dependencies.
+- `/logs/`: Contains log files from application runs.
+- `/output/`: Contains saved model files, plots, and statistics.
+- `/temporal/`: Temporal analysis modules.
+- `/utils/`: Utility functions and helpers.
+
+## Data Flow
+
+1. Data is loaded from CSV (`games.csv`) or fetched from database using `fetch_data.py`
+2. Data processing and cleaning is performed in `data_processing.py`
+3. Streak lengths before 10× multipliers are analyzed using temporal modules
+4. Features are prepared for machine learning with `temporal/features.py`
+5. Model is trained to predict streak length clusters using `temporal/training.py`
+6. Evaluation is performed with `temporal/evaluation.py`
+7. Predictions are made using `temporal/prediction.py` or `temporal/true_predict.py`
+8. Results and visualizations are saved to the `/output` directory
+
+## Environment Setup
+The project uses a Python virtual environment in the `crash_env/` directory. See the [virtualenv-activation](mdc:virtualenv-activation) documentation for details on activating the environment before running any commands.
