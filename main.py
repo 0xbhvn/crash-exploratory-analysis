@@ -74,6 +74,10 @@ def parse_arguments():
     parser.add_argument('--legacy_mode', action='store_true',
                         help='Use the legacy feature preparation method (may cause data leakage)')
 
+    # Add the new flag to the argument parser
+    parser.add_argument('--update_csv_only', action='store_true',
+                        help='Only update the CSV data from the database and exit without running analysis')
+
     # Flags for database fetch
     parser.add_argument('--update_csv', action='store_true',
                         help='Update the CSV data from the database before analysis')
@@ -103,7 +107,7 @@ def main():
     )
 
     # Handle CSV update if requested
-    if args.update_csv:
+    if args.update_csv or args.update_csv_only:
         print_info("Updating CSV data from database...")
         try:
             from fetch_data import fetch_crash_data, fetch_incremental_data
@@ -120,10 +124,16 @@ def main():
             if result:
                 print_success(
                     f"{fetch_type.capitalize()} data fetch completed successfully")
+                if args.update_csv_only:
+                    print_success("CSV update complete. Exiting as requested.")
+                    sys.exit(0)
             else:
                 print_error(f"{fetch_type.capitalize()} data fetch failed")
                 if not os.path.exists(args.input):
                     print_error(f"Input file {args.input} not found. Exiting.")
+                    sys.exit(1)
+                if args.update_csv_only:
+                    print_error("CSV update failed. Exiting.")
                     sys.exit(1)
                 print_warning("Continuing with existing data...")
 
@@ -132,6 +142,9 @@ def main():
                 "Could not import fetch_data module. Make sure fetch_data.py is in the same directory.")
             if not os.path.exists(args.input):
                 print_error(f"Input file {args.input} not found. Exiting.")
+                sys.exit(1)
+            if args.update_csv_only:
+                print_error("CSV update failed. Exiting.")
                 sys.exit(1)
             print_warning("Continuing with existing data...")
 
