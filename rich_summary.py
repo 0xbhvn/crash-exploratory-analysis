@@ -255,6 +255,53 @@ def display_output_summary(output_dir="./output"):
     print_success("Summary display complete")
 
 
+def display_custom_output_summary(output_files, title="Custom Output Summary"):
+    """
+    Display a rich summary of specified output files.
+
+    Args:
+        output_files: List of (name, path) tuples for output files
+        title: Title for the summary panel
+    """
+    # Create a panel for the summary
+    print_panel(
+        title,
+        title="Summary",
+        style="blue"
+    )
+
+    # Create a summary table
+    summary_table = create_table(
+        "Output Files", ["File", "Status", "Size", "Last Modified"])
+
+    for name, file_path in output_files:
+        if os.path.exists(file_path):
+            size = os.path.getsize(file_path)
+            mtime = os.path.getmtime(file_path)
+            modified = datetime.fromtimestamp(
+                mtime).strftime('%Y-%m-%d %H:%M:%S')
+
+            # Format file size for display
+            size_str = f"{size / 1024:.1f} KB"
+
+            add_table_row(summary_table, [
+                name,
+                "[green]Available[/green]",
+                size_str,
+                modified
+            ])
+        else:
+            add_table_row(summary_table, [
+                name,
+                "[red]Missing[/red]",
+                "N/A",
+                "N/A"
+            ])
+
+    display_table(summary_table)
+    print_success("Summary display complete")
+
+
 def main():
     """Main function to run the summary display."""
     # Get output directory from command line if provided
