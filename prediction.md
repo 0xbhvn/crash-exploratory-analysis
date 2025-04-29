@@ -90,4 +90,4 @@ python -m temporal.examples.next_streak_prediction --input games.csv --model_dir
 - `prediction.py`: General prediction functionality
 - `true_predict.py`: Strict temporal prediction
 - `deploy.py`: Deployment functionality for next streak prediction
-- `app.py`: Command-line interface 
+- `app.py`: Command-line interface
