@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, List, Tuple, Any
 from sklearn.metrics import classification_report, confusion_matrix
-from logger_config import (
+from utils.logger_config import (
     print_info, print_warning, print_success, create_table, add_table_row, display_table
 )
 

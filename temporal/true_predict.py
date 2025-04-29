@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 from typing import Dict, List, Tuple, Optional
-from logger_config import (
+from utils.logger_config import (
     print_info, print_success, print_warning, print_error,
     create_table, add_table_row, display_table
 )

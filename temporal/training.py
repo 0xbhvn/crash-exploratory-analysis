@@ -15,7 +15,7 @@ from typing import Dict, List, Tuple, Any
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import log_loss, accuracy_score, classification_report
 from imblearn.over_sampling import SMOTE
-from logger_config import (
+from utils.logger_config import (
     print_info, print_success, create_table, add_table_row, display_table
 )
 

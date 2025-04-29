@@ -5,7 +5,7 @@ Data loading functionality for temporal analysis.
 """
 
 import pandas as pd
-from logger_config import (
+from utils.logger_config import (
     print_info, create_stats_table
 )
 from data_processing import extract_streaks_and_multipliers

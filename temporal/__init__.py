@@ -9,6 +9,7 @@ This package implements enhanced time-series modeling with:
 3. Focus on genuinely predictive temporal patterns
 4. Realistic evaluation metrics for time-series prediction
 5. Transition analysis to measure pattern prediction power
+6. Forward-looking prediction for next streaks
 """
 
 from temporal.loader import load_data
@@ -18,3 +19,5 @@ from temporal.training import train_temporal_model
 from temporal.evaluation import analyze_temporal_performance, analyze_recall_improvements
 from temporal.prediction import make_temporal_prediction
 from temporal.app import parse_arguments, main
+from temporal.true_predict import make_true_predictions, analyze_true_prediction_results
+from temporal.deploy import predict_next_streak, load_model_and_predict, setup_prediction_service

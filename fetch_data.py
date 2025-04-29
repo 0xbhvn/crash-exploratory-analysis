@@ -13,15 +13,15 @@ import pandas as pd
 import sqlalchemy
 from sqlalchemy import create_engine, text
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional
 from dotenv import load_dotenv
 from pathlib import Path
 
 # Import rich logging
-from logger_config import (
+from utils.logger_config import (
     setup_logging, console, create_table, display_table,
     add_table_row, create_stats_table, print_info, print_success,
-    print_warning, print_error, print_panel
+    print_warning, print_error
 )
 
 # Load environment variables from .env file
@@ -31,11 +31,6 @@ load_dotenv()
 Path('logs').mkdir(exist_ok=True)
 
 logger = logging.getLogger(__name__)
-
-
-def setup_logging():
-    """Set up logging for standalone execution."""
-    return setup_logging(log_file='logs/data_fetch.log')
 
 
 def fetch_crash_data(output_file: str = 'games.csv', limit: Optional[int] = None, multiplier_threshold: float = 10.0) -> bool:
@@ -210,41 +205,3 @@ def fetch_incremental_data(output_file: str = 'games.csv',
     except Exception as e:
         print_error(f"Error fetching incremental data: {str(e)}")
         return False
-
-
-if __name__ == '__main__':
-    # If run directly, set up logging and fetch data
-    setup_logging()
-
-    # Display welcome panel
-    print_panel(
-        "This tool fetches crash game data from the database",
-        title="Crash Game Data Fetcher",
-        style="green"
-    )
-
-    import argparse
-    parser = argparse.ArgumentParser(
-        description='Fetch crash game data from database')
-    parser.add_argument('--output', default='games.csv',
-                        help='Output CSV file')
-    parser.add_argument('--limit', type=int,
-                        help='Limit number of rows to fetch')
-    parser.add_argument('--incremental', action='store_true',
-                        help='Fetch only new data since last known game_id')
-    parser.add_argument('--multiplier_threshold', type=float, default=10.0,
-                        help='Threshold for considering a multiplier as a hit (default: 10.0)')
-    args = parser.parse_args()
-
-    if args.incremental:
-        result = fetch_incremental_data(
-            args.output, multiplier_threshold=args.multiplier_threshold)
-    else:
-        result = fetch_crash_data(
-            args.output, args.limit, args.multiplier_threshold)
-
-    if result:
-        print_success("Data fetch successful")
-    else:
-        print_error("Data fetch failed")
-        exit(1)

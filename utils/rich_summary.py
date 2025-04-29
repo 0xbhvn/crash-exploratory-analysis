@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 # Import rich logging
-from logger_config import (
+from utils.logger_config import (
     setup_logging, print_info, print_success, print_panel, create_stats_table,
     create_table, add_table_row, display_table
 )

@@ -6,7 +6,7 @@ Data splitting functionality for temporal analysis.
 
 import pandas as pd
 from typing import List, Tuple
-from logger_config import (
+from utils.logger_config import (
     print_info, create_table, add_table_row, display_table
 )
 

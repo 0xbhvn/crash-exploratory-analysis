@@ -9,10 +9,11 @@ import sys
 import argparse
 import joblib
 import xgboost as xgb
-from logger_config import (
-    setup_logging, print_info, print_success, print_error, print_panel, print_warning
+from utils.logger_config import (
+    setup_logging, print_info, print_success, print_error, print_panel, print_warning,
+    create_table, add_table_row, display_table
 )
-from rich_summary import display_output_summary, display_custom_output_summary
+from utils.rich_summary import display_output_summary, display_custom_output_summary
 
 from temporal.loader import load_data
 from temporal.features import create_temporal_features
@@ -21,6 +22,7 @@ from temporal.training import train_temporal_model
 from temporal.evaluation import analyze_temporal_performance, analyze_recall_improvements
 from temporal.prediction import make_temporal_prediction
 from temporal.true_predict import make_true_predictions, analyze_true_prediction_results
+from temporal.deploy import load_model_and_predict
 
 
 def parse_arguments():
@@ -33,8 +35,8 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description='Temporal Analysis for Crash Game 10× Streak Prediction')
 
-    parser.add_argument('--mode', choices=['train', 'predict', 'true_predict'], default='train',
-                        help='Mode to run the script in (train, predict, or true_predict)')
+    parser.add_argument('--mode', choices=['train', 'predict', 'true_predict', 'next_streak'], default='train',
+                        help='Mode to run the script in (train, predict, true_predict, or next_streak)')
 
     parser.add_argument('--input', type=str, required=True,
                         help='Path to input CSV file with game data')
@@ -270,6 +272,57 @@ def true_predict_mode(args):
     print_success("True prediction analysis complete!")
 
 
+def next_streak_mode(args):
+    """
+    Run in next streak mode to predict the streak after the latest available data.
+
+    Args:
+        args: Command line arguments
+    """
+    # Load the model bundle
+    model_path = os.path.join(args.output_dir, 'temporal_model.pkl')
+
+    if not os.path.exists(model_path):
+        print_error("Model file not found. Train a model first.")
+        sys.exit(1)
+
+    print_info(f"Loading model from {model_path}")
+
+    # Load the data
+    streak_df = load_data(args.input, args.multiplier_threshold)
+
+    # Display welcome panel for next streak prediction mode
+    print_panel(
+        "Next Streak Prediction Mode\n"
+        "This mode predicts the upcoming streak after the most recent data.\n"
+        "Only historical data is used with no data leakage.",
+        title="Next Streak Prediction",
+        style="green bold"
+    )
+
+    # Use the most recent streaks for prediction
+    if args.num_streaks and args.num_streaks < len(streak_df):
+        recent_streaks = streak_df.tail(args.num_streaks).copy()
+        print_info(
+            f"Using the {args.num_streaks} most recent streaks for prediction")
+    else:
+        recent_streaks = streak_df.copy()
+        print_info(
+            f"Using all {len(streak_df)} streaks for prediction base")
+
+    # Make prediction for next streak
+    prediction = load_model_and_predict(model_path, recent_streaks)
+
+    # Save prediction to JSON
+    import json
+    output_path = os.path.join(args.output_dir, 'next_streak_prediction.json')
+    with open(output_path, 'w') as f:
+        json.dump(prediction, f, indent=4)
+
+    print_success(f"Saved next streak prediction to {output_path}")
+    print_success("Next streak prediction complete!")
+
+
 def _display_feature_info(feature_cols):
     """
     Display information about the features.
@@ -363,8 +416,6 @@ def _display_prediction_distribution(prediction_df):
     pred_pcts = pred_counts / len(prediction_df) * 100
 
     # Display prediction distribution
-    from logger_config import create_table, add_table_row, display_table
-
     pred_table = create_table("Prediction Distribution",
                               ["Predicted Length", "Count", "Percentage"])
 
@@ -385,8 +436,6 @@ def _display_sample_predictions(prediction_df):
     Args:
         prediction_df: DataFrame with predictions
     """
-    from logger_config import create_table, add_table_row, display_table
-
     # Display sample predictions with game IDs and streak information
     sample_table = create_table("Sample Predictions",
                                 ["Streak #", "Start Game ID", "End Game ID", "Streak Length", "Predicted", "Confidence"])
@@ -407,17 +456,14 @@ def _display_sample_predictions(prediction_df):
 
 def _analyze_predictions_with_ground_truth(prediction_df, output_dir):
     """
-    Analyze predictions when ground truth is available.
+    Analyze predictions with ground truth data.
 
     Args:
-        prediction_df: DataFrame with predictions and ground truth
-        output_dir: Directory to save outputs
+        prediction_df: DataFrame with predictions
+        output_dir: Directory to save output files
     """
-    import matplotlib.pyplot as plt
-    import seaborn as sns
     import numpy as np
     from sklearn.metrics import confusion_matrix, classification_report
-    from logger_config import print_info, create_table, add_table_row, display_table
 
     print_info("Creating confusion matrix for predictions")
 
@@ -499,18 +545,17 @@ def _analyze_predictions_with_ground_truth(prediction_df, output_dir):
 
 def _create_precision_confusion_matrix(prediction_df, cm, class_labels, output_dir):
     """
-    Create a precision-focused confusion matrix.
+    Create a precision-focused confusion matrix visualization.
 
     Args:
         prediction_df: DataFrame with predictions
         cm: Confusion matrix
         class_labels: List of class labels
-        output_dir: Directory to save outputs
+        output_dir: Directory to save output files
     """
     import matplotlib.pyplot as plt
     import seaborn as sns
     import numpy as np
-    from logger_config import print_info, create_table, add_table_row, display_table
 
     print_info("Creating precision-focused confusion matrix")
 
@@ -587,15 +632,14 @@ def _create_precision_confusion_matrix(prediction_df, cm, class_labels, output_d
 
 def _create_classification_report(prediction_df, output_dir):
     """
-    Create a classification report for predictions.
+    Create a detailed classification report for predictions.
 
     Args:
         prediction_df: DataFrame with predictions
-        output_dir: Directory to save outputs
+        output_dir: Directory to save output files
     """
     import json
     from sklearn.metrics import classification_report
-    from logger_config import print_info, create_table, add_table_row, display_table
 
     print_info("Generating classification report")
     report = classification_report(prediction_df['target_cluster'],
@@ -656,8 +700,6 @@ def _display_confidence_statistics(prediction_df):
     Args:
         prediction_df: DataFrame with prediction results
     """
-    from logger_config import create_table, add_table_row, display_table
-
     # Check if we have confidence values
     confidence_col = 'prediction_confidence'
     if confidence_col not in prediction_df.columns and 'confidence' in prediction_df.columns:
@@ -677,15 +719,14 @@ def _display_confidence_statistics(prediction_df):
 
 def _display_prediction_output_summary(output_path, prediction_df, output_dir):
     """
-    Display a summary of output files for prediction mode.
+    Display a summary of prediction outputs.
 
     Args:
-        output_path: Path to the saved predictions CSV
-        prediction_df: DataFrame with predictions
-        output_dir: Directory where files are saved
+        output_path: Path to output file
+        prediction_df: DataFrame with prediction results
+        output_dir: Directory containing output files
     """
     import pandas as pd
-    from logger_config import create_table, add_table_row, display_table
 
     # Create a panel for summary
     print_panel(
@@ -694,52 +735,56 @@ def _display_prediction_output_summary(output_path, prediction_df, output_dir):
         style="blue"
     )
 
-    # Get output files
-    output_files = [
-        (os.path.basename(output_path), 'Available'),
-    ]
+    # Create a summary table
+    summary_table = create_table(
+        "Output Files", ["File", "Status", "Path"])
 
-    # Only add confusion matrix files for standard prediction mode
-    if os.path.basename(output_path) == 'temporal_predictions.csv':
-        # Add files for standard prediction mode
-        cm_file = os.path.join(output_dir, 'prediction_confusion_matrix.png')
-        if os.path.exists(cm_file):
-            output_files.append(
-                ('prediction_confusion_matrix.png', 'Available'))
+    # Check for prediction CSV file
+    if os.path.exists(output_path):
+        add_table_row(summary_table, [
+            "Predictions CSV",
+            "[green]Available[/green]",
+            output_path
+        ])
+    else:
+        add_table_row(summary_table, [
+            "Predictions CSV",
+            "[red]Missing[/red]",
+            output_path
+        ])
 
-        pcm_file = os.path.join(output_dir, 'prediction_precision_matrix.png')
-        if os.path.exists(pcm_file):
-            output_files.append(
-                ('prediction_precision_matrix.png', 'Available'))
+    # Check for confusion matrix image
+    cm_path = os.path.join(output_dir, 'prediction_confusion_matrix.png')
+    if os.path.exists(cm_path):
+        add_table_row(summary_table, [
+            "Confusion Matrix",
+            "[green]Available[/green]",
+            cm_path
+        ])
+    else:
+        add_table_row(summary_table, [
+            "Confusion Matrix",
+            "[red]Missing[/red]",
+            cm_path
+        ])
 
-        cr_file = os.path.join(
-            output_dir, 'prediction_classification_report.json')
-        if os.path.exists(cr_file):
-            output_files.append(
-                ('prediction_classification_report.json', 'Available'))
+    # Check for classification report
+    report_path = os.path.join(
+        output_dir, 'prediction_classification_report.json')
+    if os.path.exists(report_path):
+        add_table_row(summary_table, [
+            "Classification Report",
+            "[green]Available[/green]",
+            report_path
+        ])
+    else:
+        add_table_row(summary_table, [
+            "Classification Report",
+            "[red]Missing[/red]",
+            report_path
+        ])
 
-    # Create a table for output files
-    output_table = create_table(
-        "Output Files",
-        ["File", "Status", "Size", "Last Modified"]
-    )
-
-    # Add files to table
-    for filename, status in output_files:
-        file_path = os.path.join(output_dir, filename)
-        if os.path.exists(file_path):
-            size = os.path.getsize(file_path)
-            size_str = f"{size / 1024:.1f} KB"
-            modified = os.path.getmtime(file_path)
-            modified_str = pd.Timestamp(
-                modified, unit='s').strftime('%Y-%m-%d %H:%M:%S')
-            add_table_row(
-                output_table, [filename, status, size_str, modified_str])
-        else:
-            add_table_row(output_table, [filename, 'Not Found', '-', '-'])
-
-    display_table(output_table)
-    print_success(f"Summary display complete")
+    display_table(summary_table)
 
 
 def main():
@@ -766,6 +811,8 @@ def main():
         predict_mode(args)
     elif args.mode == 'true_predict':
         true_predict_mode(args)
+    elif args.mode == 'next_streak':
+        next_streak_mode(args)
     else:
         print_error(f"Unknown mode: {args.mode}")
         sys.exit(1)
