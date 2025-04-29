@@ -1,6 +1,6 @@
 # Big-picture takeaway  
 
-You’ve squeezed **Gradient-Boosted Trees + carefully hand-crafted lags** almost as far as they’ll go: the offline model is stuck around **50 % raw accuracy / 0.83 log-loss**, and the live slice you just ran slid to **48 %**.  That’s a classic sign you’re **hitting the ceiling of the feature set / model class**, not just hyper-param settings.  
+We’ve squeezed **Gradient-Boosted Trees + carefully hand-crafted lags** almost as far as they’ll go: the offline model is stuck around **50 % raw accuracy / 0.83 log-loss**, and the live slice we just ran slid to **48 %**.  That’s a classic sign we’re **hitting the ceiling of the feature set / model class**, not just hyper-param settings.  
 Below is a playbook—in order of ROI—to push the ceiling higher.
 
 ---
@@ -9,10 +9,10 @@ Below is a playbook—in order of ROI—to push the ceiling higher.
 
 | What | How to add | Why it helps |
 |------|------------|-------------|
-| **Probability calibration** | after training:  `CalibratedClassifierCV(final_model, method="isotonic", cv="prefit")` | improves bet-sizing; raw XGB probabilities are over-confident (you already see class-2 >14 % over-pred). |
+| **Probability calibration** | after training:  `CalibratedClassifierCV(final_model, method="isotonic", cv="prefit")` | improves bet-sizing; raw XGB probabilities are over-confident (we already see class-2 >14 % over-pred). |
 | **Rolling CV instead of single hold-out** | k-fold “sliding windows” or `TimeSeriesSplit`; average metrics; early stop on each fold. | hedges against train/test split luck and gives better early-stop round count. |
 | **Focal loss** in XGBoost | `objective='multi:softprob'` → `xgb_focal_loss` (custom); or LightGBM’s `multiclassova` with `fobj=focal`. | pushes the model to learn the hardest rows (class-imbalance + overlap zone). |
-| **Hyper-param search** | plug in **Optuna** with a time-series CV; search `eta`, `max_depth`, `alpha`, `lambda`, `subsample`, `colsample_bytree`. | You’re tweaking by hand; automated search still finds ~1–2 pp lift often. |
+| **Hyper-param search** | plug in **Optuna** with a time-series CV; search `eta`, `max_depth`, `alpha`, `lambda`, `subsample`, `colsample_bytree`. | We’re tweaking by hand; automated search still finds ~1–2 pp lift often. |
 
 ---
 
@@ -73,17 +73,17 @@ class CrashSeq(torch.nn.Module):
 ```
 
 *Why bother?*  
-Trees only “see” up to the 5-lag window you hand them; a TCN sees 64+ steps implicitly and finds repeating motifs the feature-crafting misses.  On similar heavy-tail gambling series we’ve seen **+3–6 pp accuracy** after calibration.
+Trees only “see” up to the 5-lag window we hand them; a TCN sees 64+ steps implicitly and finds repeating motifs the feature-crafting misses.  On similar heavy-tail gambling series we’ve seen **+3–6 pp accuracy** after calibration.
 
 ---
 
 ## 4  |  Policy-level reinforcement learning (bet-sizing)
 
-Once you trust the conditional probabilities, the *action* is “bet / skip / size”.  Treat bankroll as state \(s_t\), model confidence vector as observation \(o_t\), and reward = Δbankroll.  
+Once we trust the conditional probabilities, the *action* is “bet / skip / size”.  Treat bankroll as state \(s_t\), model confidence vector as observation \(o_t\), and reward = Δbankroll.  
 
 * libraries: **Stable-Baselines3**, algorithm **C51 (DQN variant)** or **PPO**.  
-* environment: wrap your simulation of crash rounds + wallet.  
-* start with **imitation learning** using the heuristic martingale schedule you already outlined, then fine-tune with RL.  
+* environment: wrap our simulation of crash rounds + wallet.  
+* start with **imitation learning** using the heuristic martingale schedule we already outlined, then fine-tune with RL.  
 
 > Caveat: RL needs millions of rollouts; speed this up with **vectorised envs** & **JIT-compiled numpy** or run on recorded history first.
 
@@ -97,7 +97,7 @@ Once you trust the conditional probabilities, the *action* is “bet / skip / si
 
 ---
 
-## 6  |  Putting it into your code base
+## 6  |  Putting it into our code base
 
 *Add calibration block after training*  
 
@@ -151,7 +151,3 @@ params['objective'] = focal_loss(alpha=0.25, gamma=2.0)
    * Full MLOps loop with drift alarms and auto-retraining.
 
 Take these one hop at a time; each stage gives measurable lift without betting the entire dev budget on speculative deep nets.
-
----
-
-Let me know which piece you want to prototype first, and I’ll sketch code / hyper-param ranges in detail.
