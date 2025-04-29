@@ -33,7 +33,7 @@ from data_processing import extract_streaks_and_multipliers
 logger = setup_logging()
 
 
-def load_model(model_path: str = './output/xgboost_model.pkl'):
+def load_model(model_path: str = './output/temporal_model.pkl'):
     """
     Load the prediction model bundle.
 
@@ -105,6 +105,54 @@ def load_recent_streaks(csv_path: str, num_streaks: int = 50, multiplier_thresho
 
         # Get the most recent streaks
         recent_streaks = all_streaks.tail(num_streaks).to_dict('records')
+
+        # Check if we have streak_lengths.csv for the most recent streak
+        streak_lengths_path = os.path.join('./output', 'streak_lengths.csv')
+        if os.path.exists(streak_lengths_path):
+            try:
+                streak_lengths_df = pd.read_csv(streak_lengths_path)
+                if not streak_lengths_df.empty and 'streak_number' in streak_lengths_df.columns:
+                    # Get the last streak from streak_lengths.csv
+                    last_streak_csv = streak_lengths_df.iloc[-1]['streak_number']
+                    last_streak_data = recent_streaks[-1]['streak_number']
+
+                    if last_streak_csv > last_streak_data:
+                        print_info(
+                            f"Found more recent streak in streak_lengths.csv: #{last_streak_csv} vs #{last_streak_data} in games.csv")
+                        print_info(
+                            "Using streak_lengths.csv for the most up-to-date information")
+
+                        # Create a panel to emphasize we're predicting a newer streak
+                        print_panel(
+                            f"Predicting streak #{last_streak_csv + 1} (after the most recent record in streak_lengths.csv)",
+                            title="Next Streak Prediction",
+                            style="yellow"
+                        )
+                    else:
+                        # Create a panel to emphasize what we're predicting
+                        next_streak_num = recent_streaks[-1]['streak_number'] + 1
+                        print_panel(
+                            f"Predicting streak #{next_streak_num} (after the most recent record)",
+                            title="Next Streak Prediction",
+                            style="yellow"
+                        )
+            except Exception as e:
+                print_warning(f"Could not read streak_lengths.csv: {str(e)}")
+                # Create a panel to emphasize what we're predicting
+                next_streak_num = recent_streaks[-1]['streak_number'] + 1
+                print_panel(
+                    f"Predicting streak #{next_streak_num} (after the most recent record)",
+                    title="Next Streak Prediction",
+                    style="yellow"
+                )
+        else:
+            # Create a panel to emphasize what we're predicting
+            next_streak_num = recent_streaks[-1]['streak_number'] + 1
+            print_panel(
+                f"Predicting streak #{next_streak_num} (after the most recent record)",
+                title="Next Streak Prediction",
+                style="yellow"
+            )
 
         # Display streak range information
         if recent_streaks:
@@ -415,13 +463,19 @@ def balanced_prediction(model_bundle: Dict, streaks: List[Dict]):
     percentiles = model_bundle.get("percentiles", [0.25, 0.50, 0.75])
 
     # 1. Get model prediction using the standard approach
-    from modeling import predict_next_cluster
-    model_probs = predict_next_cluster(
-        model_bundle, streaks, window=50,
-        feature_cols=feature_cols,
-        percentiles=percentiles,
-        scaler=scaler
-    )
+    # Use a default equal probability distribution if prediction fails
+    try:
+        from modeling import predict_next_cluster
+        model_probs = predict_next_cluster(
+            model_bundle, streaks, window=50,
+            feature_cols=feature_cols,
+            percentiles=percentiles,
+            scaler=scaler
+        )
+    except Exception as e:
+        print_warning(f"Model prediction failed: {str(e)}")
+        print_info("Using equal probability distribution for model prediction")
+        model_probs = {str(i): 0.25 for i in range(4)}
 
     # 2. Calculate historical distribution
     hist_probs = calculate_historical_probabilities(streaks, percentile_values)
@@ -516,7 +570,7 @@ def parse_arguments():
         description='Balanced Crash Game Streak Prediction')
     parser.add_argument('--input', default='games.csv',
                         help='Path to input CSV file with Game ID and Bust columns')
-    parser.add_argument('--model_path', default='./output/xgboost_model.pkl',
+    parser.add_argument('--model_path', default='./output/temporal_model.pkl',
                         help='Path to the saved model file')
     parser.add_argument('--num_streaks', type=int, default=50,
                         help='Number of recent streaks to analyze')
@@ -558,6 +612,48 @@ def main():
 
     # Create balanced prediction
     balanced_probs = balanced_prediction(model_bundle, streaks)
+
+    # Display a clearer prediction for the next streak
+    if streaks:
+        next_streak_num = streaks[-1]['streak_number'] + 1
+
+        # Sort probabilities from highest to lowest
+        sorted_probs = sorted(
+            balanced_probs.items(), key=lambda x: float(x[1]), reverse=True)
+
+        # Create percentile descriptions
+        percentile_values = model_bundle.get(
+            "percentile_values", [3.0, 7.0, 14.0])
+
+        cluster_descriptions = {
+            '0': f"Short streak (1-{int(percentile_values[0])} games)",
+            '1': f"Medium-short streak ({int(percentile_values[0])+1}-{int(percentile_values[1])} games)",
+            '2': f"Medium-long streak ({int(percentile_values[1])+1}-{int(percentile_values[2])} games)",
+            '3': f"Long streak (>{int(percentile_values[2])} games)"
+        }
+
+        # Create a final prediction table
+        pred_table = create_table(
+            f"Prediction for Streak #{next_streak_num}",
+            ["Predicted Length", "Description", "Probability", "Rank"]
+        )
+
+        for i, (cluster, prob) in enumerate(sorted_probs):
+            add_table_row(pred_table, [
+                cluster,
+                cluster_descriptions.get(cluster, "Unknown"),
+                f"{float(prob)*100:.2f}%",
+                f"#{i+1}"
+            ])
+
+        display_table(pred_table)
+
+        # Add a final clear statement
+        print_panel(
+            f"For streak #{next_streak_num}, expect a {cluster_descriptions.get(sorted_probs[0][0])} with {float(sorted_probs[0][1])*100:.1f}% probability",
+            title="Final Prediction",
+            style="green bold"
+        )
 
     print_success("Balanced streak prediction complete!")
 

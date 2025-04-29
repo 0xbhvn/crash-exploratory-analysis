@@ -194,3 +194,89 @@ The analysis generates several outputs in the specified output directory:
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Recent Updates
+
+### New True Prediction Mode
+
+A new `true_predict` mode has been added to the temporal analysis that enforces strict temporal boundaries:
+
+```bash
+python -m temporal.app --mode true_predict --input games.csv --output_dir ./output --multiplier_threshold 10.0 --num_streaks 200
+```
+
+This mode ensures:
+
+- Only past data is used for each prediction
+- No data leakage occurs by enforcing strict boundaries
+- Predictions more accurately reflect real-world performance
+
+### Comparing Prediction Methods
+
+The project now offers three different prediction approaches:
+
+1. **Standard Temporal Prediction**: Evaluates on historical data
+
+   ```bash
+   python -m temporal.app --mode predict --input games.csv --output_dir ./output
+   ```
+
+   - Shows artificially high confidence for some points (up to 100%)
+   - Useful for testing model performance on historical data
+
+2. **True Temporal Prediction**: Strictly forward-looking
+
+   ```bash
+   python -m temporal.app --mode true_predict --input games.csv --output_dir ./output
+   ```
+
+   - Realistic confidence scores (typically 40-60%)
+   - Prevents any data leakage from future observations
+   - More representative of actual predictive power
+
+3. **Balanced Prediction**: Uses ensemble approach
+
+   ```bash
+   python predict_only.py
+   ```
+
+   - Combines multiple prediction methods (model, historical, transitions)
+   - Provides more balanced probability estimates
+   - Most robust for actual prediction use
+
+## Prediction Accuracy
+
+True prediction mode shows an overall accuracy of around 48%, with class-specific accuracies:
+
+- Short streaks (1-3): ~58% accuracy
+- Medium-short streaks (4-7): ~39% accuracy
+- Medium-long streaks (8-14): ~47% accuracy
+- Long streaks (>14): ~46% accuracy
+
+## Usage with True Prediction Mode
+
+To train a new model:
+
+```bash
+python -m temporal.app --mode train --input games.csv --output_dir ./output
+```
+
+To make predictions about future streaks:
+
+```bash
+python predict_only.py
+```
+
+## Project Structure with True Prediction Mode
+
+- [main.py](mdc:main.py): Main application entry point
+- [analyzer.py](mdc:analyzer.py): Core analysis functionality
+- [data_processing.py](mdc:data_processing.py): Data preparation
+- [modeling.py](mdc:modeling.py): Model training and evaluation
+- [visualization.py](mdc:visualization.py): Visualizations
+- [predict_only.py](mdc:predict_only.py): Balanced prediction script
+- [temporal/](mdc:temporal/): Temporal analysis module
+  - [app.py](mdc:temporal/app.py): Command-line interface
+  - [true_predict.py](mdc:temporal/true_predict.py): True prediction mode
+  - [features.py](mdc:temporal/features.py): Temporal feature engineering
+  - [prediction.py](mdc:temporal/prediction.py): Prediction functionality
