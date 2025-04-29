@@ -600,15 +600,27 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
     report_table = create_table("Classification Report",
                                 ["Class", "Precision", "Recall", "F1-Score", "Support"])
 
-    for cls in sorted(report.keys()):
-        if cls not in ['accuracy', 'macro avg', 'weighted avg']:
-            add_table_row(report_table, [
-                f"{cls}",
-                f"{report[cls]['precision']:.4f}",
-                f"{report[cls]['recall']:.4f}",
-                f"{report[cls]['f1-score']:.4f}",
-                f"{report[cls]['support']}"
-            ])
+    # Map numeric classes to descriptive labels
+    class_descriptions = {
+        '0': "Short (1-3)",
+        '1': "Medium-Short (4-7)",
+        '2': "Medium-Long (8-14)",
+        '3': "Long (>14)"
+    }
+
+    # Add rows for each class
+    for cls in sorted([k for k in report.keys() if k not in ['accuracy', 'macro avg', 'weighted avg']]):
+        # Convert numeric class to string for dictionary lookup
+        cls_key = str(int(float(cls))) if cls.replace(
+            '.', '', 1).isdigit() else cls
+        cls_desc = class_descriptions.get(cls_key, f"Class {cls}")
+        add_table_row(report_table, [
+            f"{cls_desc}",
+            f"{report[cls]['precision']:.4f}",
+            f"{report[cls]['recall']:.4f}",
+            f"{report[cls]['f1-score']:.4f}",
+            f"{report[cls]['support']}"
+        ])
 
     display_table(report_table)
 
@@ -1235,6 +1247,12 @@ def make_temporal_prediction(model_bundle, recent_streaks, temporal_idx_start=No
     features_df['prediction_confidence'] = np.max(
         np.column_stack(class_probs), axis=1)
 
+    # Add game IDs and streak information from recent_streaks
+    features_df['start_game_id'] = recent_streaks['start_game_id']
+    features_df['end_game_id'] = recent_streaks['end_game_id']
+    features_df['streak_number'] = recent_streaks.index
+    features_df['streak_length'] = recent_streaks['streak_length']
+
     return features_df
 
 
@@ -1458,6 +1476,183 @@ def main():
 
             display_table(pred_table)
 
+            # Display sample predictions with game IDs and streak information
+            sample_table = create_table("Sample Predictions",
+                                        ["Streak #", "Start Game ID", "End Game ID", "Streak Length", "Predicted", "Confidence"])
+
+            # Show the last 10 predictions
+            for _, row in prediction_df.tail(10).iterrows():
+                add_table_row(sample_table, [
+                    f"{row['streak_number']}",
+                    f"{row['start_game_id']}",
+                    f"{row['end_game_id']}",
+                    f"{row['streak_length']}",
+                    f"{row['prediction_desc']}",
+                    f"{row['prediction_confidence']:.3f}"
+                ])
+
+            display_table(sample_table)
+
+            # If ground truth is available, show confusion matrix
+            if 'target_cluster' in prediction_df.columns:
+                print_info("Creating confusion matrix for predictions")
+
+                cm = confusion_matrix(prediction_df['target_cluster'],
+                                      prediction_df['predicted_cluster'])
+
+                # Define class labels for better readability
+                class_labels = [
+                    "Short (1-3)",
+                    "Medium-Short (4-7)",
+                    "Medium-Long (8-14)",
+                    "Long (>14)"
+                ]
+
+                # Display confusion matrix as rich table
+                cm_table = create_table("Prediction Confusion Matrix",
+                                        ["Actual\\Predicted"] + [f"Pred {i}: {label}" for i, label in enumerate(class_labels)])
+
+                # Calculate row totals for recall calculation
+                row_totals = cm.sum(axis=1)
+
+                # Add rows with counts and percentages
+                for i, (row, label) in enumerate(zip(cm, class_labels)):
+                    row_data = [f"Act {i}: {label}"]
+                    for j, count in enumerate(row):
+                        recall = (count / row_totals[i]) * \
+                            100 if row_totals[i] > 0 else 0
+                        if i == j:  # Diagonal element - show recall percentage
+                            cell_text = f"{count} ({recall:.1f}% recall)"
+                        else:
+                            cell_text = f"{count}"
+                        row_data.append(cell_text)
+                    add_table_row(cm_table, row_data)
+
+                display_table(cm_table)
+
+                # Plot and save confusion matrix
+                plt.figure(figsize=(10, 8))
+                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                            xticklabels=class_labels, yticklabels=class_labels)
+                plt.xlabel('Predicted Class')
+                plt.ylabel('Actual Class')
+                plt.title('Prediction Confusion Matrix')
+
+                # Save confusion matrix plot
+                cm_path = os.path.join(
+                    args.output_dir, 'prediction_confusion_matrix.png')
+                plt.savefig(cm_path, bbox_inches='tight')
+                plt.close()
+
+                print_info(f"Saved prediction confusion matrix to {cm_path}")
+
+                # Add precision confusion matrix
+                print_info("Creating precision-focused confusion matrix")
+
+                # Calculate column totals for precision calculation
+                col_totals = cm.sum(axis=0)
+
+                # Create precision matrix table
+                precision_table = create_table("Prediction Confusion Matrix (Precision)",
+                                               ["Actual\\Predicted"] + [f"Pred {i}: {label}" for i, label in enumerate(class_labels)])
+
+                # Add rows with counts and precision percentages
+                for i, (row, label) in enumerate(zip(cm, class_labels)):
+                    row_data = [f"Act {i}: {label}"]
+                    for j, count in enumerate(row):
+                        precision = (
+                            count / col_totals[j]) * 100 if col_totals[j] > 0 else 0
+                        if i == j:  # Diagonal element - show precision percentage
+                            cell_text = f"{count} ({precision:.1f}% precision)"
+                        else:
+                            cell_text = f"{count}"
+                        row_data.append(cell_text)
+                    add_table_row(precision_table, row_data)
+
+                # Add total row showing column totals
+                total_row = ["Total Predictions"]
+                for j, col_total in enumerate(col_totals):
+                    # Diagonal element is correct predictions
+                    correct = cm[j, j]
+                    precision = (correct / col_total) * \
+                        100 if col_total > 0 else 0
+                    total_row.append(f"{col_total} ({precision:.1f}% overall)")
+
+                add_table_row(precision_table, total_row)
+                display_table(precision_table)
+
+                # Plot and save the precision confusion matrix
+                plt.figure(figsize=(10, 8))
+                # Normalize by column (axis=0) to get precision
+                cm_norm = cm.astype('float') / cm.sum(axis=0)[:, np.newaxis]
+                # Replace NaN with 0 for empty columns
+                cm_norm = np.nan_to_num(cm_norm)
+                sns.heatmap(cm_norm, annot=True, fmt='.1%', cmap='Blues',
+                            xticklabels=class_labels, yticklabels=class_labels)
+                plt.xlabel('Predicted Class')
+                plt.ylabel('Actual Class')
+                plt.title('Precision Confusion Matrix')
+
+                # Save precision confusion matrix plot
+                precision_cm_path = os.path.join(
+                    args.output_dir, 'prediction_precision_matrix.png')
+                plt.savefig(precision_cm_path, bbox_inches='tight')
+                plt.close()
+
+                print_info(
+                    f"Saved precision confusion matrix to {precision_cm_path}")
+
+                # Add classification report
+                print_info("Generating classification report")
+                report = classification_report(prediction_df['target_cluster'],
+                                               prediction_df['predicted_cluster'],
+                                               output_dict=True)
+
+                # Create a classification report table
+                report_table = create_table("Classification Report",
+                                            ["Class", "Precision", "Recall", "F1-Score", "Support"])
+
+                # Map numeric classes to descriptive labels
+                class_descriptions = {
+                    '0': "Short (1-3)",
+                    '1': "Medium-Short (4-7)",
+                    '2': "Medium-Long (8-14)",
+                    '3': "Long (>14)"
+                }
+
+                # Add rows for each class
+                for cls in sorted([k for k in report.keys() if k not in ['accuracy', 'macro avg', 'weighted avg']]):
+                    # Convert numeric class to string for dictionary lookup
+                    cls_key = str(int(float(cls))) if cls.replace(
+                        '.', '', 1).isdigit() else cls
+                    cls_desc = class_descriptions.get(cls_key, f"Class {cls}")
+                    add_table_row(report_table, [
+                        f"{cls_desc}",
+                        f"{report[cls]['precision']:.4f}",
+                        f"{report[cls]['recall']:.4f}",
+                        f"{report[cls]['f1-score']:.4f}",
+                        f"{report[cls]['support']}"
+                    ])
+
+                # Add accuracy row
+                if 'accuracy' in report:
+                    add_table_row(report_table, [
+                        "Accuracy",
+                        "",
+                        "",
+                        f"{report['accuracy']:.4f}",
+                        f"{sum([report[cls]['support'] for cls in report if cls not in ['accuracy', 'macro avg', 'weighted avg']])}"
+                    ])
+
+                display_table(report_table)
+
+                # Save classification report to JSON
+                report_path = os.path.join(
+                    args.output_dir, 'prediction_classification_report.json')
+                with open(report_path, 'w') as f:
+                    json.dump(report, f, indent=4)
+                print_info(f"Saved classification report to {report_path}")
+
             # Save predictions to CSV
             output_path = os.path.join(
                 args.output_dir, 'temporal_predictions.csv')
@@ -1475,8 +1670,30 @@ def main():
                 conf_table, ["Median Confidence", f"{conf_median:.4f}"])
             display_table(conf_table)
 
-            # Display rich summary of outputs
-            display_output_summary(args.output_dir)
+            # Display only prediction-related outputs in summary for predict mode
+            output_files = []
+
+            # Add only prediction-relevant files to the output summary
+            if os.path.exists(output_path):
+                output_files.append(('temporal_predictions.csv', output_path))
+
+            if 'target_cluster' in prediction_df.columns and os.path.exists(cm_path):
+                output_files.append(
+                    ('prediction_confusion_matrix.png', cm_path))
+                if os.path.exists(precision_cm_path):
+                    output_files.append(
+                        ('prediction_precision_matrix.png', precision_cm_path))
+                if os.path.exists(report_path):
+                    output_files.append(
+                        ('prediction_classification_report.json', report_path))
+
+            if output_files:
+                from rich_summary import display_custom_output_summary
+                display_custom_output_summary(
+                    output_files, "Prediction Output Files")
+            else:
+                # Skip summary display for predict mode
+                pass
 
             print_success("Prediction analysis complete!")
 
