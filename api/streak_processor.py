@@ -47,7 +47,8 @@ project_root = os.path.abspath(os.path.join(current_dir, '..'))
 sys.path.insert(0, current_dir)
 sys.path.insert(0, project_root)
 
-# Import websocket logger and rich utilities
+# Global variables
+MODEL_BUNDLE = None  # Will be initialized when loading model
 
 # Configure logging for file-based logs
 # Ensure logs directory exists
@@ -111,7 +112,9 @@ print_panel("\n".join(config_info), title="Streak Processor", style="blue")
 try:
     # First try temporal from parent project root
     sys.path.insert(0, project_root)
-    from temporal.deploy import load_model_and_predict
+    from temporal.deploy import setup_prediction_service
+    # We now use our own wrapper for load_model_and_predict
+    # from temporal.deploy import load_model_and_predict
     from data_processing import extract_streaks_and_multipliers
 
     # Then try app modules
@@ -347,6 +350,7 @@ def update_prediction_correctness() -> int:
     Returns:
         Number of updated predictions
     """
+    global MODEL_BUNDLE
     db = get_db()
     updated_count = 0
 
@@ -520,6 +524,58 @@ def save_prediction(streak_number: int, prediction: Dict[str, Any], db=None) -> 
             db.close()
 
 
+def load_model_and_predict(MODEL_PATH, streaks_df):
+    """
+    Load model and make a prediction.
+
+    This is a wrapper around the temporal.deploy function to manage
+    the MODEL_BUNDLE global variable.
+    """
+    global MODEL_BUNDLE
+
+    try:
+        # Make sure the model path exists
+        if not os.path.exists(MODEL_PATH):
+            print_error(f"Model file not found at {MODEL_PATH}")
+            return {}
+
+        # If MODEL_BUNDLE is not loaded yet, load it
+        if MODEL_BUNDLE is None:
+            try:
+                # First try direct loading with joblib
+                import joblib
+                print_info(f"Loading model bundle from {MODEL_PATH}")
+                with open(MODEL_PATH, "rb") as f:
+                    MODEL_BUNDLE = joblib.load(f)
+
+                if "percentile_values" in MODEL_BUNDLE:
+                    print_success(
+                        f"Model loaded with percentile values: {MODEL_BUNDLE['percentile_values']}")
+                else:
+                    print_warning(
+                        "Model loaded but has no percentile values, will use defaults")
+                    MODEL_BUNDLE["percentile_values"] = [3, 7, 14]
+            except Exception as e:
+                print_warning(
+                    f"Could not load model bundle directly: {str(e)}")
+                # If direct loading fails, create minimal bundle
+                MODEL_BUNDLE = {
+                    "path": MODEL_PATH,
+                    "percentile_values": [3, 7, 14]
+                }
+
+        # Call the original function from temporal.deploy
+        from temporal.deploy import load_model_and_predict as original_predict
+        prediction = original_predict(MODEL_PATH, streaks_df)
+
+        return prediction
+
+    except Exception as e:
+        print_error(f"Error in load_model_and_predict: {str(e)}")
+        logger.error("Stack trace:", exc_info=True)
+        return {}
+
+
 def make_prediction(streaks_df: pd.DataFrame) -> Dict[str, Any]:
     """
     Make a prediction for the next streak using the temporal model.
@@ -535,15 +591,6 @@ def make_prediction(streaks_df: pd.DataFrame) -> Dict[str, Any]:
         return {}
 
     try:
-        # Make sure the model path exists
-        if not os.path.exists(MODEL_PATH):
-            print_error(f"Model file not found at {MODEL_PATH}")
-            available_dirs = [d for d in os.listdir(
-                project_root) if os.path.isdir(os.path.join(project_root, d))]
-            logger.error(
-                f"Available directories in project root: {available_dirs}")
-            return {}
-
         # Use debug level for verbose information
         logger.debug(f"Making prediction using model at {MODEL_PATH}")
         logger.debug(f"Using {len(streaks_df)} streaks for prediction")
@@ -748,6 +795,7 @@ async def process_streaks_from_db() -> None:
     Process streaks from the database efficiently.
     This queries all games since the last processed streak's end_game_id.
     """
+    global MODEL_BUNDLE
     logger.debug("Processing streaks from database")
 
     try:
@@ -930,6 +978,7 @@ async def quick_catchup(last_game_id: Optional[str] = None) -> bool:
     Returns:
         Boolean indicating if any new streaks were processed
     """
+    global MODEL_BUNDLE
     logger.debug(
         f"Starting quick catchup from game ID {last_game_id or 'beginning'}")
 
@@ -1028,6 +1077,7 @@ def continuous_processing() -> None:
     """Run continuous processing looking for new games.
     Performs a small catchup first to handle any missed streaks,
     then continuously monitors for new games."""
+    global MODEL_BUNDLE
     print_info("Starting continuous processing")
 
     # Get last processed game ID and streak info
