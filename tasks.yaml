@@ -1,0 +1,38 @@
+todos:
+  # P0 - Quick Wins
+  - id: ordinal_loss_pairwise
+    description: Implement Ordinal Loss (objective="rank:pairwise" in XGBoost)
+    priority: P0
+    notes: Alternative to XGBRanker, CatBoost YetiRank, LightGBM Lambdarank. Start with simplest.
+  - id: probability_calibration
+    description: Add Isotonic Probability Calibration (CalibratedClassifierCV)
+    priority: P0
+  # P1 - Stability & Tuning
+  - id: rolling_cv
+    description: Implement Rolling Cross-Validation (TimeSeriesSplit)
+    priority: P1
+  - id: optuna_hpo
+    description: Add Hyperparameter Optimization (Optuna) with Rolling CV
+    priority: P1
+    depends_on: rolling_cv
+  - id: custom_class_weights
+    description: Apply Custom Class Weights (Focus on class 1 recall)
+    priority: P1
+  # P2 - Feature Engineering
+  - id: richer_lags
+    description: Engineer Richer Lag Features (exp-decay mean, volatility, inter-arrival)
+    priority: P2
+  - id: hmm_regime_flag
+    description: Add Hidden-Markov Model Regime Flag Feature
+    priority: P2
+  # P3/P4 - Alternative Models (Larger Efforts)
+  - id: explore_tcn
+    description: Prototype Sequence Model (Temporal Convolutional Network)
+    priority: P3
+    notes: Major alternative model architecture.
+  - id: explore_rl
+    description: Explore Reinforcement Learning Policy for Bankroll Optimization
+    priority: P4
+    notes: Major alternative approach focusing on bankroll, not just accuracy.
+
+done: [] 

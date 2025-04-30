@@ -1,0 +1,18 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Dependency Management Workflow
+
+This project uses `pip` and a `requirements.txt` file located at the root: [requirements.txt](mdc:requirements.txt).
+
+**ALWAYS follow this procedure when adding or updating dependencies:**
+
+1.  **Activate the virtual environment:** Ensure the `crash_env` virtual environment is active. See the `virtualenv-activation` rule for details ([virtualenv-activation](mdc:.cursor/rules/virtualenv-activation.mdc)).
+2.  **Install the package:** Use `pip install <package_name>` (or `pip install -U <package_name>` to upgrade) to install the desired package(s). Always install the latest version unless a specific version is required for compatibility.
+3.  **Freeze requirements:** After installing/upgrading, **immediately** run the following command from the workspace root to update the `requirements.txt` file:
+    ```bash
+    pip freeze > requirements.txt
+    ```
+4.  **DO NOT** manually edit the `requirements.txt` file. It should always reflect the exact state of the virtual environment after installations.
