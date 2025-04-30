@@ -86,57 +86,56 @@ def to_cluster(length, percentile_values):
         return 3
 
 
-def load_predictions(log_file):
-    """Load prediction data from log file, extracting only truth records and model parameters."""
+def load_predictions(log_file, percentile_values_from_model):
+    """Load prediction data from CSV file."""
     truth_records = []
-    model_percentiles = None
+    print_info(f"Loading predictions from CSV: {log_file}")
 
-    with open(log_file, 'r') as f:
-        for i, line in enumerate(f):
-            if i == 0 and line.startswith('# Replay Predictions Log'):
-                continue
+    try:
+        # Read the CSV file using pandas
+        df = pd.read_csv(log_file)
 
-            if i == 1 and line.startswith('# Percentile values:'):
-                # Extract percentile values from log file comment
-                try:
-                    percentile_str = line.replace(
-                        '# Percentile values:', '').strip()
-                    model_percentiles = eval(percentile_str)
-                    print_info(
-                        f"Using percentile values from log: {model_percentiles}")
-                except Exception as e:
-                    print_warning(
-                        f"Could not parse percentile values from log: {str(e)}")
-                continue
+        # Ensure required columns exist
+        required_cols = [
+            'timestamp', 'predicted_for_streak', 'predicted_cluster',
+            'confidence', 'prob_class_0', 'prob_class_1', 'prob_class_2',
+            'prob_class_3', 'actual_streak_length', 'actual_cluster', 'correct'
+        ]
+        if not all(col in df.columns for col in required_cols):
+            missing = [col for col in required_cols if col not in df.columns]
+            print_error(f"CSV file missing required columns: {missing}")
+            # Return model percentiles even if CSV fails
+            return [], percentile_values_from_model
 
-            if line.startswith('#') or not line.strip():
-                continue
+        # Convert relevant columns to numeric, handling potential errors
+        for col in ['predicted_cluster', 'actual_cluster', 'actual_streak_length']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df['correct'] = df['correct'].astype(bool)
+        df['confidence'] = pd.to_numeric(df['confidence'], errors='coerce')
 
-            try:
-                record = json.loads(line)
+        # Drop rows where conversion failed or essential data is missing
+        df.dropna(subset=['predicted_cluster', 'actual_cluster',
+                  'actual_streak_length', 'confidence'], inplace=True)
 
-                # Capture percentiles from predictions if provided
-                if "model_percentiles" in record and not model_percentiles:
-                    model_percentiles = record["model_percentiles"]
-                    print_info(
-                        f"Using model percentiles from records: {model_percentiles}")
+        # Convert DataFrame rows to a list of dictionaries (similar to old format)
+        # Ensure integer types for clusters
+        df['predicted_cluster'] = df['predicted_cluster'].astype(int)
+        df['actual_cluster'] = df['actual_cluster'].astype(int)
 
-                if record.get('kind') == 'truth':
-                    # Use the 'correct' field directly from the log if it's already been
-                    # calculated with the correct percentiles
-                    truth_records.append(record)
-            except json.JSONDecodeError:
-                print_warning(f"Could not parse line: {line}")
+        truth_records = df.to_dict('records')
 
-    print_info(f"Loaded {len(truth_records)} validated predictions")
+        print_info(
+            f"Loaded {len(truth_records)} validated predictions from CSV")
 
-    # If we don't have model percentiles, use a default
-    if not model_percentiles:
-        model_percentiles = [3, 7, 14]
-        print_warning(
-            f"No percentile values found in log, using defaults: {model_percentiles}")
+    except FileNotFoundError:
+        print_error(f"Prediction CSV file not found: {log_file}")
+        return [], percentile_values_from_model  # Return model percentiles
+    except Exception as e:
+        print_error(f"Error reading or processing CSV file {log_file}: {e}")
+        return [], percentile_values_from_model  # Return model percentiles
 
-    return truth_records, model_percentiles
+    # Return the loaded records and the percentiles derived from the model bundle
+    return truth_records, percentile_values_from_model
 
 
 def generate_confusion_matrix(truth_records, percentile_values):
@@ -375,11 +374,15 @@ def main():
         style="green"
     )
 
-    # Load prediction data with correct percentile-based clustering
-    truth_records, percentile_values = load_predictions(args.log)
+    # Load model bundle first to get percentile values
+    _, percentile_values = load_model_bundle(args.model)
+
+    # Load prediction data using the CSV reader
+    truth_records, _ = load_predictions(
+        args.log, percentile_values)  # Pass model percentiles
 
     if not truth_records:
-        print_error("No truth records found in the log file")
+        print_error("No valid prediction records found to analyze.")
         return
 
     # Generate confusion matrix
@@ -396,12 +399,22 @@ def main():
 
     # Create a summary panel with the key finding
     if adjusted_accuracy > 0:
+        expected_performance = 0.48  # Expected performance from roadmap
+        accuracy_assessment = (
+            f"This is significantly lower than the expected model performance of ~48%.\n"
+            f"There may be issues with the model or prediction process that need investigation."
+        ) if adjusted_accuracy < 0.40 else (
+            f"This is close to the expected model performance of ~48%."
+            if 0.40 <= adjusted_accuracy <= 0.55 else
+            f"This exceeds the expected model performance of ~48%, which is a positive improvement."
+        )
+
         print_panel(
             f"Prediction Analysis Results:\n"
             f"Using correct percentile-based clustering with values {percentile_values}\n"
             f"Overall accuracy: {adjusted_accuracy:.2%}\n\n"
-            f"This matches the expected model performance of ~48%.\n"
-            f"The model is working correctly using consistent boundaries.",
+            f"{accuracy_assessment}\n"
+            f"The percentile boundaries are: {percentile_values}",
             title="Analysis Conclusion",
             style="green"
         )

@@ -1,0 +1,25 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+# Data Preprocessing Requirement
+
+**CRITICAL:** Before running any model training, validation, prediction, or analysis scripts, you **MUST** ensure the core data CSV is up-to-date.
+
+Always execute the following command from the workspace root **first**:
+
+```bash
+python -m main --update_csv_only
+```
+
+This command is defined in [main.py](mdc:main.py).
+
+This applies to scripts such as:
+- `main.py` (when running training/prediction modes)
+- `validate_model.py`
+- `analyze_predictions.py`
+- `replay_predictor.py`
+- Any script performing analysis based on `games.csv` or derived data.
+
+Failure to do this may result in using stale data.

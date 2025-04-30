@@ -72,14 +72,10 @@ def predict_next_streak(model_bundle: Dict, latest_streaks: pd.DataFrame) -> Dic
     X = features[feature_cols]
     X_scaled = scaler.transform(X)
 
-    # Create DMatrix for prediction
-    dpredict = xgb.DMatrix(
-        X_scaled,
-        feature_names=[f'f{i}' for i in range(X_scaled.shape[1])]
-    )
+    # Make prediction using the loaded model (Calibrator)
+    print_info("Using calibrated model for prediction probabilities.")
+    y_pred_proba = model.predict_proba(X_scaled)
 
-    # Make prediction
-    y_pred_proba = model.predict(dpredict)
     y_pred = np.argmax(y_pred_proba, axis=1)
     confidence = np.max(y_pred_proba, axis=1)[0]
 

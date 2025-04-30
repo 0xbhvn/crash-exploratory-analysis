@@ -109,14 +109,8 @@ def make_true_predictions(model_bundle: Dict, streak_df: pd.DataFrame, num_strea
         # Scale features
         X_scaled = scaler.transform(X)
 
-        # Create DMatrix for prediction
-        dpredict = xgb.DMatrix(
-            X_scaled,
-            feature_names=[f'f{i}' for i in range(X_scaled.shape[1])]
-        )
-
-        # Make prediction
-        y_pred_proba = model.predict(dpredict)
+        # Make prediction using the loaded Calibrator (which expects NumPy array)
+        y_pred_proba = model.predict_proba(X_scaled)
         y_pred = np.argmax(y_pred_proba, axis=1)
 
         # Get actual target cluster

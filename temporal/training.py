@@ -14,6 +14,9 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Any
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import log_loss, accuracy_score, classification_report
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.frozen import FrozenEstimator
 from imblearn.over_sampling import SMOTE
 from utils.logger_config import (
     print_info, print_success, create_table, add_table_row, display_table
@@ -26,6 +29,7 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
                          gamma=0, min_child_weight=1, reg_lambda=1.0, subsample=0.8, colsample_bytree=0.8):
     """
     Train an XGBoost model with proper temporal validation.
+    Uses XGBClassifier interface for better scikit-learn compatibility.
 
     Args:
         X_train: Training features
@@ -49,9 +53,9 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
         colsample_bytree: Subsample ratio of columns per tree
 
     Returns:
-        Trained model and model bundle with metadata
+        Trained model bundle including the fitted classifier and calibrator
     """
-    print_info("Training XGBoost model with proper temporal validation")
+    print_info("Training XGBoost model using XGBClassifier interface")
 
     # Apply data transformations if needed
     X_train_processed, y_train_processed, class_weight_dict = _preprocess_training_data(
@@ -66,61 +70,120 @@ def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_
     # Get sample weights if using class weights
     sample_weights = _get_sample_weights(y_train_processed, class_weight_dict)
 
-    # Create XGBoost data matrices
-    dtrain, dtest = _create_xgb_matrices(
-        X_train_scaled, y_train_processed, X_test_scaled, y_test, sample_weights)
+    # Get base XGBoost parameters (without objective/eval_metric specific to xgb.train)
+    base_params = {
+        'objective': 'multi:softprob',
+        'num_class': len(np.unique(y_train)),
+        'max_depth': max_depth,
+        'learning_rate': eta,
+        'gamma': gamma,
+        'min_child_weight': min_child_weight,
+        'reg_lambda': reg_lambda,
+        'subsample': subsample,
+        'colsample_bytree': colsample_bytree,
+        'seed': 42,
+        'n_estimators': num_rounds,
+        'eval_metric': 'mlogloss',
+        'early_stopping_rounds': early_stopping
+    }
+    _display_model_params(base_params)  # Display params
 
-    # Set model parameters
-    params = _get_xgb_params(
-        num_classes=len(np.unique(y_train)),
-        max_depth=max_depth,
-        eta=eta,
-        gamma=gamma,
-        min_child_weight=min_child_weight,
-        reg_lambda=reg_lambda,
-        subsample=subsample,
-        colsample_bytree=colsample_bytree
+    # Initialize XGBClassifier
+    xgb_classifier = xgb.XGBClassifier(**base_params)
+
+    # Define evaluation set and early stopping parameters for fit method
+    eval_set = [(X_train_scaled, y_train_processed), (X_test_scaled, y_test)]
+
+    # Fit the XGBClassifier with early stopping
+    print_info("Fitting XGBClassifier with early stopping...")
+    xgb_classifier.fit(
+        X_train_scaled,
+        y_train_processed,
+        eval_set=eval_set,
+        sample_weight=sample_weights,
+        verbose=100  # Print progress every 100 rounds
     )
 
-    # Display model parameters
-    _display_model_params(params)
+    best_rounds = xgb_classifier.best_iteration
+    print_info(
+        f"Best number of rounds determined by early stopping: {best_rounds}")
+    # Note: XGBClassifier automatically uses the model from the best iteration.
 
-    # Train model with early stopping
-    bst, best_rounds = _train_with_early_stopping(
-        params, dtrain, dtest, num_rounds, early_stopping
-    )
+    # Add Isotonic Calibration
+    print_info("Applying Isotonic Calibration to the fitted XGBClassifier...")
+    frozen_estimator = FrozenEstimator(xgb_classifier)
+    calib = CalibratedClassifierCV(frozen_estimator, method="isotonic")
+    # Fit calibrator on original training data
+    calib.fit(X_train_scaled, y_train_processed)
+    print_info("Calibration complete.")
 
-    # Train final model
-    final_model = _train_final_model(params, dtrain, best_rounds)
+    # --- Evaluation ---
+    # Use the *calibrated* model for final probability predictions on test set
+    print_info("Evaluating the *calibrated* model on the test set...")
+    y_pred_proba_calibrated = calib.predict_proba(X_test_scaled)
+    y_pred_calibrated = np.argmax(y_pred_proba_calibrated, axis=1)
 
-    # Evaluate model
-    y_pred_proba, y_pred, metrics = _evaluate_model(
-        final_model, dtest, y_test, y_train)
+    # Calculate metrics using calibrated predictions
+    accuracy = accuracy_score(y_test, y_pred_calibrated)
+    logloss = log_loss(y_test, y_pred_proba_calibrated)
 
-    # Display evaluation results
+    # Calculate baseline log loss (prediction based on class frequencies)
+    y_train_int = y_train.astype(np.int64)  # Use original y_train for baseline
+    class_counts_baseline = np.bincount(y_train_int) / len(y_train)
+    baseline_probs = np.tile(class_counts_baseline, (len(y_test), 1))
+    baseline_logloss = log_loss(y_test, baseline_probs)
+    logloss_improvement = (baseline_logloss - logloss) / \
+        baseline_logloss * 100 if baseline_logloss > 0 else 0
+
+    metrics = {
+        'accuracy': accuracy,
+        'log_loss': logloss,
+        'baseline_log_loss': baseline_logloss,
+        'log_loss_improvement': logloss_improvement
+    }
+
+    # Display evaluation results (based on calibrated model)
     _display_evaluation_results(metrics)
-    _display_classification_report(y_test, y_pred)
+    # Use calibrated predictions
+    _display_classification_report(y_test, y_pred_calibrated)
 
-    # Get feature importance
-    importance_df = _get_feature_importance(final_model, feature_cols)
+    # Get feature importance (from the underlying booster of the fitted classifier)
+    # Need to access the booster object stored within the fitted XGBClassifier
+    booster = xgb_classifier.get_booster()
+    importance_df = _get_feature_importance(booster, feature_cols)
 
     # Plot feature importance
     feature_importance_plot_path = _plot_feature_importance(
         importance_df, feature_cols, output_dir)
 
-    # Create and save model bundle
-    model_bundle = _create_model_bundle(
-        final_model, scaler, feature_cols, params, metrics, y_test, y_pred, class_weight_dict,
-        use_smote, smote_k_neighbors, X_test, best_rounds
+    # Create and save model bundle (saving the fitted XGBClassifier and the Calibrator)
+    # We save the Calibrator which already contains the frozen estimator inside.
+    model_bundle = _create_model_bundle_sklearn(
+        classifier=xgb_classifier,  # Pass the fitted XGBClassifier
+        calibrator=calib,        # Pass the fitted Calibrator
+        scaler=scaler,
+        feature_cols=feature_cols,
+        params=xgb_classifier.get_params(),  # Get params from classifier
+        metrics=metrics,
+        y_test=y_test,
+        y_pred=y_pred_calibrated,  # Save calibrated predictions
+        class_weight_dict=class_weight_dict,
+        use_smote=use_smote,
+        smote_k_neighbors=smote_k_neighbors,
+        X_test=X_test,
+        best_rounds=best_rounds
     )
 
     model_path = _save_model_bundle(model_bundle, output_dir)
 
-    print_success(f"Saved temporal model bundle to {model_path}")
+    print_success(
+        f"Saved temporal model bundle (XGBClassifier + Calibrator) to {model_path}")
     print_info(
         f"Saved feature importance plot to {feature_importance_plot_path}")
 
-    return final_model, model_bundle
+    # Return the calibrator as the primary "model" for prediction
+    # And the full bundle for inspection/metadata
+    return calib, model_bundle
 
 
 def _preprocess_training_data(X_train, y_train, use_smote, smote_k_neighbors, use_class_weights, weight_scale):
@@ -273,69 +336,6 @@ def _get_sample_weights(y_train, class_weight_dict):
     return np.array([class_weight_dict[y] for y in y_train])
 
 
-def _create_xgb_matrices(X_train_scaled, y_train, X_test_scaled, y_test, sample_weights):
-    """
-    Create XGBoost DMatrix objects for training and testing.
-
-    Args:
-        X_train_scaled: Scaled training features
-        y_train: Training targets
-        X_test_scaled: Scaled testing features
-        y_test: Testing targets
-        sample_weights: Sample weights for training instances or None
-
-    Returns:
-        Training and testing DMatrix objects
-    """
-    dtrain = xgb.DMatrix(
-        X_train_scaled,
-        label=y_train,
-        weight=sample_weights,
-        feature_names=[f'f{i}' for i in range(X_train_scaled.shape[1])]
-    )
-
-    dtest = xgb.DMatrix(
-        X_test_scaled,
-        label=y_test,
-        feature_names=[f'f{i}' for i in range(X_test_scaled.shape[1])]
-    )
-
-    return dtrain, dtest
-
-
-def _get_xgb_params(num_classes, max_depth, eta, gamma, min_child_weight,
-                    reg_lambda, subsample, colsample_bytree):
-    """
-    Get XGBoost parameters.
-
-    Args:
-        num_classes: Number of target classes
-        max_depth: Maximum tree depth
-        eta: Learning rate
-        gamma: Minimum loss reduction
-        min_child_weight: Minimum sum of instance weight in child
-        reg_lambda: L2 regularization
-        subsample: Subsample ratio of training data
-        colsample_bytree: Subsample ratio of columns per tree
-
-    Returns:
-        Dictionary of XGBoost parameters
-    """
-    return {
-        'objective': 'multi:softprob',
-        'num_class': num_classes,
-        'max_depth': max_depth,
-        'eta': eta,
-        'gamma': gamma,
-        'min_child_weight': min_child_weight,
-        'lambda': reg_lambda,
-        'subsample': subsample,
-        'colsample_bytree': colsample_bytree,
-        'eval_metric': 'mlogloss',
-        'seed': 42
-    }
-
-
 def _display_model_params(params):
     """
     Display model parameters in a table.
@@ -349,209 +349,54 @@ def _display_model_params(params):
     display_table(param_table)
 
 
-def _train_with_early_stopping(params, dtrain, dtest, num_rounds, early_stopping):
+def _get_feature_importance(booster: xgb.Booster, feature_cols: List[str]) -> pd.DataFrame:
     """
-    Train the model with early stopping.
-
+    Get feature importance from the booster.
     Args:
-        params: XGBoost parameters
-        dtrain: Training DMatrix
-        dtest: Testing DMatrix
-        num_rounds: Maximum number of boosting rounds
-        early_stopping: Early stopping rounds
-
-    Returns:
-        Trained model and best number of rounds
-    """
-    print_info("Training model with validation-based early stopping")
-
-    evallist = [(dtrain, 'training'), (dtest, 'validation')]
-
-    bst = xgb.train(
-        params,
-        dtrain,
-        num_rounds,
-        evals=evallist,
-        early_stopping_rounds=early_stopping,
-        verbose_eval=100
-    )
-
-    best_rounds = bst.best_iteration
-    print_info(f"Best number of rounds: {best_rounds}")
-
-    return bst, best_rounds
-
-
-def _train_final_model(params, dtrain, best_rounds):
-    """
-    Train the final model with the best number of rounds.
-
-    Args:
-        params: XGBoost parameters
-        dtrain: Training DMatrix
-        best_rounds: Best number of rounds
-
-    Returns:
-        Final trained model
-    """
-    print_info("Training final model on full training data")
-    final_model = xgb.train(
-        params,
-        dtrain,
-        best_rounds
-    )
-
-    return final_model
-
-
-def _evaluate_model(model, dtest, y_test, y_train):
-    """
-    Evaluate the model and calculate performance metrics.
-
-    Args:
-        model: Trained XGBoost model
-        dtest: Testing DMatrix
-        y_test: True test labels
-        y_train: True train labels
-
-    Returns:
-        Prediction probabilities, predicted labels, and metrics dictionary
-    """
-    # Make predictions
-    y_pred_proba = model.predict(dtest)
-    y_pred = np.argmax(y_pred_proba, axis=1)
-
-    # Calculate metrics
-    accuracy = accuracy_score(y_test, y_pred)
-    logloss = log_loss(y_test, y_pred_proba)
-
-    # Calculate baseline log loss (prediction based on class frequencies)
-    y_train_int = y_train.astype(np.int64)
-    class_weights = np.bincount(y_train_int) / len(y_train)
-    baseline_probs = np.tile(class_weights, (len(y_test), 1))
-    baseline_logloss = log_loss(y_test, baseline_probs)
-    logloss_improvement = (baseline_logloss - logloss) / baseline_logloss * 100
-
-    metrics = {
-        'accuracy': accuracy,
-        'log_loss': logloss,
-        'baseline_log_loss': baseline_logloss,
-        'log_loss_improvement': logloss_improvement
-    }
-
-    return y_pred_proba, y_pred, metrics
-
-
-def _display_evaluation_results(metrics):
-    """
-    Display evaluation results in a table.
-
-    Args:
-        metrics: Dictionary of evaluation metrics
-    """
-    eval_table = create_table("Temporal Model Evaluation", ["Metric", "Value"])
-    add_table_row(eval_table, ["Accuracy", f"{metrics['accuracy']:.4f}"])
-    add_table_row(eval_table, ["Log Loss", f"{metrics['log_loss']:.4f}"])
-    add_table_row(eval_table, ["Baseline Log Loss",
-                  f"{metrics['baseline_log_loss']:.4f}"])
-    add_table_row(eval_table, ["Log Loss Improvement",
-                  f"{metrics['log_loss_improvement']:.2f}%"])
-    display_table(eval_table)
-
-
-def _display_classification_report(y_test, y_pred):
-    """
-    Display classification report in a table.
-
-    Args:
-        y_test: True test labels
-        y_pred: Predicted labels
-    """
-    report = classification_report(y_test, y_pred, output_dict=True)
-
-    # Create a table showing classification report
-    report_table = create_table("Classification Report",
-                                ["Class", "Precision", "Recall", "F1-Score", "Support"])
-
-    # Map numeric classes to descriptive labels
-    class_descriptions = {
-        '0': "Short (1-3)",
-        '1': "Medium-Short (4-7)",
-        '2': "Medium-Long (8-14)",
-        '3': "Long (>14)"
-    }
-
-    # Add rows for each class
-    for cls in sorted([k for k in report.keys() if k not in ['accuracy', 'macro avg', 'weighted avg']]):
-        # Convert numeric class to string for dictionary lookup
-        cls_key = str(int(float(cls))) if cls.replace(
-            '.', '', 1).isdigit() else cls
-        cls_desc = class_descriptions.get(cls_key, f"Class {cls}")
-        add_table_row(report_table, [
-            f"{cls_desc}",
-            f"{report[cls]['precision']:.4f}",
-            f"{report[cls]['recall']:.4f}",
-            f"{report[cls]['f1-score']:.4f}",
-            f"{report[cls]['support']}"
-        ])
-
-    display_table(report_table)
-
-
-def _get_feature_importance(model, feature_cols):
-    """
-    Get feature importance from the model.
-
-    Args:
-        model: Trained XGBoost model
+        booster: Trained XGBoost booster object
         feature_cols: Feature column names
-
     Returns:
         DataFrame with feature importance information
     """
     # Get feature importance
-    importances = model.get_score(importance_type='gain')
+    importances = booster.get_score(importance_type='gain')
     importance_df = pd.DataFrame({
         'Feature': list(importances.keys()),
         'Importance': list(importances.values())
     }).sort_values('Importance', ascending=False)
-
-    # Calculate percentage of total importance
     total_importance = importance_df['Importance'].sum()
     importance_df['Percentage'] = (
-        importance_df['Importance'] / total_importance * 100)
+        importance_df['Importance'] / total_importance * 100) if total_importance > 0 else 0
 
-    # Print feature name mappings
     print_info("Feature ID to Feature Name Mapping:")
     feature_map_table = create_table("Feature Name Mapping", [
                                      "Feature ID", "Feature Name"])
     for i, col in enumerate(feature_cols):
-        add_table_row(feature_map_table, [f"f{i}", col])
+        # Map booster feature names (f0, f1...) back to original column names
+        # Booster might not use all features, handle potential KeyError
+        feature_id = f'f{i}'
+        if feature_id in importances:
+            add_table_row(feature_map_table, [feature_id, col])
     display_table(feature_map_table)
 
-    # Display top features
     top_n = min(10, len(importance_df))
     top_features = importance_df.head(top_n)
-
-    importance_table = create_table(f"Top {top_n} Important Features",
-                                    ["Feature", "Importance", "% of Total"])
-
+    importance_table = create_table(f"Top {top_n} Important Features", [
+                                    "Feature", "Importance", "% of Total"])
     for _, row in top_features.iterrows():
-        # Try to get the real feature name from feature mapping
         feature_id = row['Feature']
-        feature_idx = int(feature_id.replace('f', '')
-                          ) if feature_id.startswith('f') else None
-        feature_name = feature_cols[feature_idx] if feature_idx is not None and feature_idx < len(
-            feature_cols) else feature_id
-
+        try:
+            feature_idx = int(feature_id.replace('f', ''))
+            feature_name = feature_cols[feature_idx] if feature_idx < len(
+                feature_cols) else feature_id
+        except (ValueError, IndexError):
+            feature_name = feature_id  # Fallback if mapping fails
         add_table_row(importance_table, [
             f"{feature_id} ({feature_name})",
             f"{row['Importance']:.2f}",
             f"{row['Percentage']:.2f}%"
         ])
-
     display_table(importance_table)
-
     return importance_df
 
 
@@ -592,13 +437,71 @@ def _plot_feature_importance(importance_df, feature_cols, output_dir):
     return plot_path
 
 
-def _create_model_bundle(model, scaler, feature_cols, params, metrics, y_test,
-                         y_pred, class_weight_dict, use_smote, smote_k_neighbors, X_test, best_rounds):
+def _display_evaluation_results(metrics):
     """
-    Create a model bundle with all metadata for saving.
+    Display evaluation results in a table.
 
     Args:
-        model: Trained XGBoost model
+        metrics: Dictionary of evaluation metrics
+    """
+    eval_table = create_table("Temporal Model Evaluation", ["Metric", "Value"])
+    add_table_row(eval_table, ["Accuracy", f"{metrics['accuracy']:.4f}"])
+    add_table_row(eval_table, ["Log Loss", f"{metrics['log_loss']:.4f}"])
+    add_table_row(eval_table, ["Baseline Log Loss",
+                  f"{metrics['baseline_log_loss']:.4f}"])
+    add_table_row(eval_table, ["Log Loss Improvement",
+                  f"{metrics['log_loss_improvement']:.2f}%"])
+    display_table(eval_table)
+
+
+def _display_classification_report(y_test, y_pred):
+    """
+    Display classification report in a table.
+
+    Args:
+        y_test: True test labels
+        y_pred: Predicted labels
+    """
+    report = classification_report(y_test, y_pred, output_dict=True)
+
+    # Create a table showing classification report
+    report_table = create_table("Classification Report",
+                                ["Class", "Precision", "Recall", "F1-Score", "Support"])
+
+    # Map numeric classes to descriptive labels
+    # TODO: Potentially get these percentile values from the model bundle
+    # or pass them down if they are needed consistently.
+    class_descriptions = {
+        '0': "Short (1-3)",
+        '1': "Medium-Short (4-7)",
+        '2': "Medium-Long (8-14)",
+        '3': "Long (>14)"
+    }
+
+    # Add rows for each class
+    for cls in sorted([k for k in report.keys() if k not in ['accuracy', 'macro avg', 'weighted avg']]):
+        # Convert numeric class to string for dictionary lookup
+        cls_key = str(int(float(cls))) if cls.replace(
+            '.', '', 1).isdigit() else cls
+        cls_desc = class_descriptions.get(cls_key, f"Class {cls}")
+        add_table_row(report_table, [
+            f"{cls_desc}",
+            f"{report[cls]['precision']:.4f}",
+            f"{report[cls]['recall']:.4f}",
+            f"{report[cls]['f1-score']:.4f}",
+            f"{report[cls]['support']}"
+        ])
+
+    display_table(report_table)
+
+
+def _create_model_bundle_sklearn(classifier, calibrator, scaler, feature_cols, params, metrics, y_test,
+                                 y_pred, class_weight_dict, use_smote, smote_k_neighbors, X_test, best_rounds):
+    """
+    Create a model bundle using scikit-learn compatible objects.
+    Args:
+        classifier: Fitted XGBClassifier instance
+        calibrator: Fitted CalibratedClassifierCV instance
         scaler: Fitted StandardScaler
         feature_cols: Feature column names
         params: XGBoost parameters
@@ -610,22 +513,29 @@ def _create_model_bundle(model, scaler, feature_cols, params, metrics, y_test,
         smote_k_neighbors: Number of neighbors used for SMOTE
         X_test: Test features
         best_rounds: Best number of rounds
-
     Returns:
         Model bundle dictionary
     """
+    # Extract booster for saving raw feature importance if needed, but primary model is calibrator
+    try:
+        booster = classifier.get_booster()
+        raw_importance = booster.get_score(importance_type='gain')
+    except Exception:
+        raw_importance = None  # Handle cases where booster might not be directly accessible
+
     return {
-        'model': model,
+        'model': calibrator,  # Save the calibrator as the main prediction object
+        'base_classifier': classifier,  # Optionally save the base classifier too
         'scaler': scaler,
         'feature_cols': feature_cols,
-        'params': params,
-        'num_classes': len(np.unique(y_test)),
-        'feature_importance': model.get_score(importance_type='gain'),
+        'params': params,  # Parameters used for XGBClassifier
+        'num_classes': classifier.n_classes_,
+        'feature_importance': raw_importance,  # Raw importance from booster
         'metrics': metrics,
         'train_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'test_indices': X_test.index.tolist(),
         'test_labels': y_test.tolist(),
-        'predictions': y_pred.tolist(),
+        'predictions': y_pred.tolist(),  # Calibrated predictions
         'class_weights': class_weight_dict,
         'used_smote': use_smote,
         'smote_params': {'k_neighbors': smote_k_neighbors} if use_smote else None,

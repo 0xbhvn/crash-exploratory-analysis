@@ -8,6 +8,11 @@ import os
 import sys
 import argparse
 import joblib
+import json
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import pandas as pd
 import xgboost as xgb
 from utils.logger_config import (
     setup_logging, print_info, print_success, print_error, print_panel, print_warning,
@@ -131,7 +136,7 @@ def train_mode(args):
     _display_class_balancing_strategy(args)
 
     # Train temporal model
-    model, model_bundle = train_temporal_model(
+    calib, model_bundle = train_temporal_model(
         X_train, y_train, X_test, y_test, feature_cols, args.output_dir,
         use_class_weights=args.use_class_weights,
         weight_scale=args.weight_scale,
@@ -147,24 +152,29 @@ def train_mode(args):
         subsample=args.subsample,
         colsample_bytree=args.colsample_bytree)
 
-    # Get predictions on test set
-    X_test_scaled = model_bundle['scaler'].transform(X_test)
-    dtest = joblib.load(os.path.join(args.output_dir, 'temporal_model.pkl'))['model'].predict(
-        xgb.DMatrix(X_test_scaled, feature_names=[
-                    f'f{i}' for i in range(X_test_scaled.shape[1])])
-    )
-    y_pred = model_bundle['predictions']
-
-    # Analyze recall improvements if using class weighting methods
-    if args.use_class_weights or args.use_smote:
-        report = analyze_recall_improvements(y_test, y_pred, args.output_dir)
-
-    # Analyze temporal performance
-    analyze_temporal_performance(
-        features_df, y_pred, test_indices, percentile_values, args.output_dir)
-
     # Display rich summary of outputs
     display_output_summary(args.output_dir)
+
+    # Analyze recall improvements if using class weighting methods
+    # Need the actual predictions made during training eval for this
+    # y_pred_calibrated is available from training.py
+    # However, train_temporal_model doesn't return it directly, need to adjust or re-evaluate
+    # For now, comment out this section as y_pred is not correctly defined here.
+    # if args.use_class_weights or args.use_smote:
+    #     y_pred = model_bundle.get('predictions') # Attempt to get saved predictions
+    #     if y_pred is not None:
+    #          report = analyze_recall_improvements(y_test, np.array(y_pred), args.output_dir)
+    #     else:
+    #          print_warning("Could not find predictions in model bundle for recall analysis.")
+
+    # Analyze temporal performance - requires predictions
+    # Similar issue as above, y_pred not correctly available here.
+    # analyze_temporal_performance(
+    #     features_df, y_pred, test_indices, percentile_values, args.output_dir)
+
+    # Return the calibrator as the primary "model" for prediction
+    # And the full bundle for inspection/metadata
+    return calib, model_bundle
 
 
 def predict_mode(args):

@@ -105,7 +105,7 @@ def _extract_and_scale_features(features_df, feature_cols, scaler, model_bundle)
         model_bundle: Model bundle with feature information
 
     Returns:
-        Scaled feature matrix as DMatrix
+        Scaled feature matrix as Numpy array
     """
     # Check for missing columns and add them with default values
     missing_cols = [
@@ -121,28 +121,30 @@ def _extract_and_scale_features(features_df, feature_cols, scaler, model_bundle)
     X = features_df[feature_cols]
     X_scaled = scaler.transform(X)
 
-    # Create DMatrix for prediction
-    dpredict = xgb.DMatrix(
-        X_scaled,
-        feature_names=[f'f{i}' for i in range(X_scaled.shape[1])]
-    )
+    # Create DMatrix for prediction - REMOVED
+    # dpredict = xgb.DMatrix(
+    #     X_scaled,
+    #     feature_names=[f'f{i}' for i in range(X_scaled.shape[1])]
+    # )
 
-    return dpredict
+    # Return the scaled numpy array directly
+    return X_scaled
 
 
-def _make_model_predictions(model, dpredict):
+def _make_model_predictions(model, X_scaled):
     """
     Make predictions using the model.
 
     Args:
-        model: Trained XGBoost model
-        dpredict: XGBoost DMatrix with scaled features
+        model: Trained model (CalibratedClassifierCV)
+        X_scaled: Scaled features as a NumPy array
 
     Returns:
         Tuple of (predicted classes, prediction probabilities)
     """
     # Make predictions
-    y_pred_proba = model.predict(dpredict)
+    # Use predict_proba as the calibrator works on probabilities
+    y_pred_proba = model.predict_proba(X_scaled)
     y_pred = np.argmax(y_pred_proba, axis=1)
 
     return y_pred, y_pred_proba
