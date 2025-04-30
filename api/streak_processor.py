@@ -351,6 +351,15 @@ def update_prediction_correctness() -> int:
     updated_count = 0
 
     try:
+        # Get percentile values from model bundle
+        percentile_values = [3, 7, 14]  # Default fallback
+        if MODEL_BUNDLE and "percentile_values" in MODEL_BUNDLE:
+            percentile_values = MODEL_BUNDLE["percentile_values"]
+            logger.debug(f"Using model percentile values: {percentile_values}")
+        else:
+            logger.warning(
+                "Model percentile values not found, using defaults: [3, 7, 14]")
+
         # Find predictions that don't have correctness values yet
         pending_predictions = db.query(Prediction).filter(
             Prediction.correct.is_(None)
@@ -379,14 +388,14 @@ def update_prediction_correctness() -> int:
                 actual_length = actual_streak.streak_length
                 prediction.actual_streak_length = actual_length
 
-                # Determine the actual cluster based on streak length
-                actual_cluster = None
+                # Determine the actual cluster based on streak length and model percentiles
+                p25, p50, p75 = percentile_values
 
-                if actual_length <= 3:
+                if actual_length <= p25:
                     actual_cluster = 0  # short
-                elif actual_length <= 7:
+                elif actual_length <= p50:
                     actual_cluster = 1  # medium_short
-                elif actual_length <= 14:
+                elif actual_length <= p75:
                     actual_cluster = 2  # medium_long
                 else:
                     actual_cluster = 3  # long
