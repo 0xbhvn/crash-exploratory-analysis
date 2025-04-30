@@ -342,26 +342,248 @@ def save_streaks(streaks_df: pd.DataFrame) -> List[int]:
 
 def update_prediction_correctness() -> int:
     """
-    DISABLED: Prediction functionality temporarily removed.
+    Update the correctness of previous predictions based on actual results.
+
+    Returns:
+        Number of updated predictions
     """
-    logger.info("Prediction functionality disabled")
-    return 0
+    db = get_db()
+    updated_count = 0
+
+    try:
+        # Find predictions that don't have correctness values yet
+        pending_predictions = db.query(Prediction).filter(
+            Prediction.correct.is_(None)
+        ).all()
+
+        if not pending_predictions:
+            logger.debug("No pending predictions to update")
+            return 0
+
+        logger.debug(
+            f"Found {len(pending_predictions)} pending predictions to evaluate")
+
+        # Process each pending prediction
+        for prediction in pending_predictions:
+            try:
+                # Get the actual streak for this prediction
+                actual_streak = db.query(Streak).filter(
+                    Streak.streak_number == prediction.next_streak_number
+                ).first()
+
+                if not actual_streak:
+                    # Streak hasn't occurred yet
+                    continue
+
+                # Store the actual streak length
+                actual_length = actual_streak.streak_length
+                prediction.actual_streak_length = actual_length
+
+                # Determine the actual cluster based on streak length
+                actual_cluster = None
+
+                if actual_length <= 3:
+                    actual_cluster = 0  # short
+                elif actual_length <= 7:
+                    actual_cluster = 1  # medium_short
+                elif actual_length <= 14:
+                    actual_cluster = 2  # medium_long
+                else:
+                    actual_cluster = 3  # long
+
+                # Store the actual cluster
+                prediction.actual_cluster = actual_cluster
+
+                # Update prediction correctness
+                prediction.correct = (
+                    prediction.predicted_cluster == actual_cluster)
+
+                # Calculate time to verification if possible
+                if prediction.created_at and actual_streak.created_at:
+                    time_diff = actual_streak.created_at - prediction.created_at
+                    prediction.time_to_verification = int(
+                        time_diff.total_seconds())
+
+                updated_count += 1
+
+                logger.debug(
+                    f"Updated prediction #{prediction.id} for streak #{prediction.next_streak_number}: "
+                    f"predicted={prediction.predicted_cluster} ({prediction.prediction_desc}), "
+                    f"actual={actual_cluster} (length={actual_length}), "
+                    f"correct={prediction.correct}"
+                )
+
+            except Exception as e:
+                logger.error(
+                    f"Error updating prediction #{prediction.id}: {str(e)}")
+                # Continue with other predictions
+
+        # Commit all updates
+        if updated_count > 0:
+            db.commit()
+
+        return updated_count
+
+    except Exception as e:
+        db.rollback()
+        print_error(f"Error in update_prediction_correctness: {str(e)}")
+        logger.error(f"Error in update_prediction_correctness: {str(e)}")
+        return 0
+    finally:
+        db.close()
 
 
-def save_prediction(streak_number: int, prediction: str, probability: float) -> bool:
+def save_prediction(streak_number: int, prediction: Dict[str, Any], db=None) -> bool:
     """
-    DISABLED: Prediction functionality temporarily removed.
+    Save a streak prediction to the database.
+
+    Args:
+        streak_number: The streak number to predict after
+        prediction: Prediction dictionary from the model
+        db: Database session (optional, will create one if not provided)
+
+    Returns:
+        Boolean indicating success
     """
-    logger.info("Prediction functionality disabled")
-    return False
+    close_db = False
+    if db is None:
+        db = get_db()
+        close_db = True
+
+    try:
+        # Create prediction model with enhanced fields
+        pred = Prediction(
+            next_streak_number=prediction["next_streak_number"],
+            starts_after_game_id=prediction["starts_after_game_id"],
+            predicted_cluster=prediction["predicted_cluster"],
+            prediction_desc=prediction["prediction_desc"],
+            confidence=prediction["confidence"],
+            correct=None,  # Will be updated later when the streak occurs
+
+            # Include enhanced analytics fields
+            confidence_distribution=prediction.get("confidence_distribution"),
+            prediction_entropy=prediction.get("prediction_entropy"),
+            model_version=prediction.get("model_version"),
+            feature_set=prediction.get("feature_set"),
+            lookback_window=prediction.get("lookback_window")
+        )
+
+        # Save to database
+        db.add(pred)
+        db.commit()
+
+        print_success(
+            f"Saved prediction for streak #{prediction['next_streak_number']} (after game #{prediction['starts_after_game_id']}): "
+            f"{prediction['prediction_desc']} with {prediction['confidence']:.4f} confidence"
+        )
+
+        # Print the prediction with rich formatting
+        from utils.logger_config import create_table, add_table_row, display_table
+
+        pred_table = create_table(
+            f"Prediction for Next Streak #{prediction['next_streak_number']}",
+            ["Attribute", "Value"]
+        )
+
+        add_table_row(pred_table, ["Predicted Length",
+                      prediction['prediction_desc']])
+        add_table_row(pred_table, ["Confidence",
+                      f"{prediction['confidence']:.4f}"])
+        add_table_row(pred_table, ["After Game ID", str(
+            prediction['starts_after_game_id'])])
+        if prediction.get("prediction_entropy") is not None:
+            add_table_row(pred_table, [
+                          "Uncertainty", f"{prediction['prediction_entropy']:.4f} (lower is better)"])
+        if prediction.get("model_version") is not None:
+            add_table_row(pred_table, ["Model", prediction['model_version']])
+
+        display_table(pred_table)
+
+        return True
+
+    except Exception as e:
+        db.rollback()
+        print_error(f"Error saving prediction: {str(e)}")
+        logger.error(f"Error saving prediction: {str(e)}")
+        return False
+    finally:
+        if close_db:
+            db.close()
 
 
 def make_prediction(streaks_df: pd.DataFrame) -> Dict[str, Any]:
     """
-    DISABLED: Prediction functionality temporarily removed.
+    Make a prediction for the next streak using the temporal model.
+
+    Args:
+        streaks_df: DataFrame with streak data
+
+    Returns:
+        Dictionary with prediction details
     """
-    logger.info("Prediction functionality disabled")
-    return {}
+    if streaks_df.empty:
+        logger.warning("Cannot make prediction: No streak data provided")
+        return {}
+
+    try:
+        # Make sure the model path exists
+        if not os.path.exists(MODEL_PATH):
+            print_error(f"Model file not found at {MODEL_PATH}")
+            available_dirs = [d for d in os.listdir(
+                project_root) if os.path.isdir(os.path.join(project_root, d))]
+            logger.error(
+                f"Available directories in project root: {available_dirs}")
+            return {}
+
+        # Use debug level for verbose information
+        logger.debug(f"Making prediction using model at {MODEL_PATH}")
+        logger.debug(f"Using {len(streaks_df)} streaks for prediction")
+
+        # Use temporal model to predict the next streak
+        prediction = load_model_and_predict(MODEL_PATH, streaks_df)
+
+        if not prediction:
+            print_error("Prediction failed: Model returned empty result")
+            return {}
+
+        logger.debug(f"Raw prediction: {prediction}")
+
+        # Enhance prediction with additional analytics data
+        prediction["model_version"] = os.path.basename(MODEL_PATH)
+        # Set your actual feature set name
+        prediction["feature_set"] = "temporal"
+        prediction["lookback_window"] = 5  # Set your actual lookback window
+
+        # Store full confidence distribution
+        if "prob_class_0" in prediction and "prob_class_1" in prediction and "prob_class_2" in prediction and "prob_class_3" in prediction:
+            prediction["confidence_distribution"] = {
+                "class_0": float(prediction["prob_class_0"]),
+                "class_1": float(prediction["prob_class_1"]),
+                "class_2": float(prediction["prob_class_2"]),
+                "class_3": float(prediction["prob_class_3"])
+            }
+
+            # Calculate prediction entropy (higher means more uncertain)
+            import math
+            probs = [
+                prediction["prob_class_0"],
+                prediction["prob_class_1"],
+                prediction["prob_class_2"],
+                prediction["prob_class_3"]
+            ]
+            entropy = 0
+            for p in probs:
+                if p > 0:
+                    entropy -= p * math.log2(p)
+            prediction["prediction_entropy"] = float(entropy)
+
+        # Return the prediction
+        return prediction
+
+    except Exception as e:
+        print_error(f"Error making prediction: {str(e)}")
+        logger.error("Stack trace:", exc_info=True)
+        return {}
 
 
 def get_streak_info() -> Tuple[Optional[int], Optional[str]]:
@@ -584,9 +806,31 @@ async def process_streaks_from_db() -> None:
         # Save the streaks
         saved_ids = save_streaks(streaks_df)
 
+        # If we saved any new streaks, make a prediction for the next streak
+        if saved_ids:
+            # Get all streaks for use in making prediction
+            all_streaks_df = get_all_streaks()
+
+            # Make prediction for the next streak and save in a single workflow
+            prediction = make_prediction(all_streaks_df)
+
+            # Save prediction if valid
+            if prediction and 'next_streak_number' in prediction:
+                db = get_db()
+                try:
+                    save_prediction(max_streak_number +
+                                    len(streaks_df), prediction, db)
+
+                    # Update correctness of previous predictions
+                    updated_count = update_prediction_correctness()
+                    if updated_count > 0:
+                        print_info(
+                            f"Updated {updated_count} previous prediction(s) with actual results")
+                finally:
+                    db.close()
+
     except Exception as e:
         print_error(f"Error processing streaks: {str(e)}")
-        logger.error(f"Error processing streaks from database: {str(e)}")
         logger.error("Stack trace:", exc_info=True)
 
 
@@ -709,7 +953,7 @@ async def quick_catchup(last_game_id: Optional[str] = None) -> bool:
             Game.game_id > last_game_id).count()
 
         if games_to_process > 0:
-            console.print(f"[cyan]Catching up {games_to_process} games[/cyan]")
+            print_info(f"Catching up {games_to_process} games")
     finally:
         db.close()
 
@@ -747,6 +991,27 @@ async def quick_catchup(last_game_id: Optional[str] = None) -> bool:
             print_success(
                 f"Processed {processed_streaks} new streaks during catchup")
 
+            # Get all streaks for prediction in a unified process
+            all_streaks_df = get_all_streaks()
+
+            # Make prediction for the next streak and process in a single message
+            prediction = make_prediction(all_streaks_df)
+
+            # Save prediction if valid
+            if prediction and 'next_streak_number' in prediction:
+                db = get_db()
+                try:
+                    save_prediction(max_streak_number +
+                                    len(streaks_df), prediction, db)
+
+                    # Update correctness of previous predictions
+                    updated_count = update_prediction_correctness()
+                    if updated_count > 0:
+                        print_info(
+                            f"Updated {updated_count} previous prediction(s) with actual results")
+                finally:
+                    db.close()
+
     return processed_streaks > 0
 
 
@@ -754,23 +1019,24 @@ def continuous_processing() -> None:
     """Run continuous processing looking for new games.
     Performs a small catchup first to handle any missed streaks,
     then continuously monitors for new games."""
-    logger.info("Starting continuous processing")
+    print_info("Starting continuous processing")
 
     # Get last processed game ID and streak info
     current_streak_number, last_game_id = get_streak_info()
 
     if current_streak_number:
-        logger.info(
+        print_info(
             f"Starting from streak #{current_streak_number} (last game ID: {last_game_id})")
     else:
-        logger.info("No existing streaks found - will start from the beginning")
+        print_info("No existing streaks found - will start from the beginning")
 
     # First do a quick catchup for any missed games
     catchup_completed = quick_catchup(last_game_id)
 
     # Get updated last processed game ID
     _, last_game_id = get_streak_info()
-    logger.info(f"After catchup phase, last processed game ID: {last_game_id}")
+    logger.debug(
+        f"After catchup phase, last processed game ID: {last_game_id}")
 
     # Run continuous processing
     while True:
@@ -780,7 +1046,7 @@ def continuous_processing() -> None:
             try:
                 max_streak_number = db.query(
                     func.max(Streak.streak_number)).scalar() or 0
-                logger.info(
+                logger.debug(
                     f"Current highest streak number: {max_streak_number}")
             finally:
                 db.close()
@@ -791,7 +1057,7 @@ def continuous_processing() -> None:
             if not games_df.empty:
                 # Update last game ID
                 last_game_id = str(games_df['game_id'].max())
-                logger.info(
+                logger.debug(
                     f"Fetched {len(games_df)} new games up to game ID {last_game_id}")
 
                 # 2. Process streaks
@@ -803,31 +1069,49 @@ def continuous_processing() -> None:
                     streaks_df['streak_number'] = streaks_df['streak_number'] + \
                         max_streak_number
                     new_numbers = streaks_df['streak_number'].tolist()
-                    logger.info(
+                    logger.debug(
                         f"Adjusted streak numbers from {original_numbers} to {new_numbers}")
 
                     # 3. Save streaks
                     saved_ids = save_streaks(streaks_df)
                     if saved_ids:
-                        logger.info(f"Saved {len(saved_ids)} new streaks")
+                        logger.debug(f"Saved {len(saved_ids)} new streaks")
 
-                    # NOTE: Prediction functionality disabled
-                    # No prediction processing or updating
+                        # 4. Get all streaks for prediction
+                        all_streaks_df = get_all_streaks()
+
+                        # 5. Make prediction for the next streak and handle in one workflow
+                        prediction = make_prediction(all_streaks_df)
+
+                        # 6. Save prediction if valid
+                        if prediction and 'next_streak_number' in prediction:
+                            db = get_db()
+                            try:
+                                save_prediction(
+                                    max_streak_number + len(streaks_df), prediction, db)
+
+                                # 7. Update correctness of previous predictions
+                                updated_count = update_prediction_correctness()
+                                if updated_count > 0:
+                                    print_info(
+                                        f"Updated {updated_count} previous prediction(s) with actual results")
+                            finally:
+                                db.close()
                 else:
-                    logger.info("No new streaks found in this batch")
+                    logger.debug("No new streaks found in this batch")
             else:
-                logger.info("No new games found, waiting for next check")
+                logger.debug("No new games found, waiting for next check")
 
         except Exception as e:
-            logger.error(f"Error in processing cycle: {str(e)}")
+            print_error(f"Error in processing cycle: {str(e)}")
 
         # In test mode, process only once
         if args.test:
-            logger.info("Test mode - stopping after one cycle")
+            print_info("Test mode - stopping after one cycle")
             break
 
         # Sleep before next iteration
-        logger.info(f"Sleeping for {FETCH_INTERVAL} seconds")
+        logger.debug(f"Sleeping for {FETCH_INTERVAL} seconds")
         time.sleep(FETCH_INTERVAL)
 
 

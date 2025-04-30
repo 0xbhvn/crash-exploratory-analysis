@@ -6,6 +6,7 @@ Pydantic schemas for prediction data.
 
 from typing import Dict, Any, List, Tuple, Optional, Union
 from pydantic import BaseModel, Field
+from datetime import datetime
 
 
 class PredictionBase(BaseModel):
@@ -15,8 +16,23 @@ class PredictionBase(BaseModel):
     predicted_cluster: int
     prediction_desc: str
     confidence: float
-    prediction_data: Dict[str, Any]
+
+    # Optional fields
     correct: Optional[bool] = None
+    actual_streak_length: Optional[int] = None
+    actual_cluster: Optional[int] = None
+
+    # Confidence analysis
+    confidence_distribution: Optional[Dict[str, float]] = None
+    prediction_entropy: Optional[float] = None
+
+    # Temporal context
+    time_to_verification: Optional[int] = None
+
+    # Model metadata
+    model_version: Optional[str] = None
+    feature_set: Optional[str] = None
+    lookback_window: Optional[int] = None
 
 
 class PredictionCreate(PredictionBase):
@@ -37,6 +53,9 @@ class PredictionResponse(PredictionBase):
 class PredictionUpdate(BaseModel):
     """Schema for updating prediction correctness."""
     correct: bool
+    actual_streak_length: Optional[int] = None
+    actual_cluster: Optional[int] = None
+    time_to_verification: Optional[int] = None
 
     class Config:
         """Pydantic model config."""
