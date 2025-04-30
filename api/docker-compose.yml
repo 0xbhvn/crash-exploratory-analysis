@@ -1,0 +1,58 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crash-streak-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../output:/app/output
+    env_file:
+      - ../.env
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - crash-network
+
+  db:
+    image: postgres:15
+    container_name: crash-db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - POSTGRES_DB=${POSTGRES_DB:-crash_game}
+    restart: unless-stopped
+    networks:
+      - crash-network
+
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crash-collector
+    command: "python -m app.collector"
+    volumes:
+      - ../output:/app/output
+    env_file:
+      - ../.env
+    depends_on:
+      - api
+      - db
+    restart: unless-stopped
+    networks:
+      - crash-network
+
+volumes:
+  postgres_data:
+
+networks:
+  crash-network:
+    driver: bridge 

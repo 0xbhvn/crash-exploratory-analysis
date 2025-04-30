@@ -1,0 +1,34 @@
+[build]
+builder = "nixpacks"
+nixpacksVersion = "1.17.0"
+
+[deploy]
+startCommand = "python -m api.streak_processor --websocket"
+restartPolicyType = "on-failure"
+restartPolicyMaxRetries = 10
+
+[phases.setup]
+cmds = [
+  "apt-get update",
+  "apt-get install -y python3-pip python3-dev build-essential libpq-dev"
+]
+
+[phases.install]
+cmds = [
+  "pip install --upgrade pip",
+  "pip install -r requirements.txt"
+]
+
+[phases.prepare]
+cmds = [
+  "mkdir -p api/logs"
+]
+
+[env]
+PYTHON_VERSION = "3.10"
+PYTHONUNBUFFERED = "1"
+PYTHONPATH = "/app"
+LOG_LEVEL = "INFO"
+FETCH_INTERVAL = "60"
+MULTIPLIER_THRESHOLD = "10.0"
+BATCH_SIZE = "1000" 

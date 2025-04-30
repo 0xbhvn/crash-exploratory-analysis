@@ -13,7 +13,7 @@ from typing import Dict, List, Tuple
 
 # Import rich logging
 from utils.logger_config import (
-    print_info, create_stats_table
+    print_info, create_stats_table, console
 )
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,9 @@ def extract_streaks_and_multipliers(df: pd.DataFrame, multiplier_threshold: floa
     Returns:
         DataFrame with streak information
     """
-    print_info("Extracting streaks and their properties")
+    # Use rich console for output instead of print_info
+    console.print(
+        "[dim cyan]Extracting streaks and their properties[/dim cyan]")
 
     # Check if DataFrame has required columns
     required_cols = ["Game ID", "Bust"]
@@ -74,8 +76,8 @@ def extract_streaks_and_multipliers(df: pd.DataFrame, multiplier_threshold: floa
         # If we're dealing with a transformed DataFrame, it might be the result of previous processing
         if isinstance(df, pd.DataFrame) and 'streak_number' in df.columns:
             # Already a streak DataFrame, just return it
-            print_info(
-                f"Using existing streak DataFrame with {len(df)} streaks")
+            console.print(
+                f"[dim cyan]Using existing streak DataFrame with {len(df)} streaks[/dim cyan]")
             return df
         else:
             raise ValueError(
@@ -119,12 +121,14 @@ def extract_streaks_and_multipliers(df: pd.DataFrame, multiplier_threshold: floa
 
             streaks.append(streak_info)
 
-            # Reset streak
+            # Reset streak - this ensures the next streak starts fresh
+            # and doesn't include the current 10x+ game
             current_streak = []
             current_streak_ids = []
 
     # Convert to DataFrame
     streak_df = pd.DataFrame(streaks)
-    print_info(f"Extracted {len(streak_df)} complete streaks")
+    console.print(
+        f"[bright_cyan]Extracted {len(streak_df)} complete streaks[/bright_cyan]")
 
     return streak_df
