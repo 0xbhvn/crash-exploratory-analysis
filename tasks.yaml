@@ -33,10 +33,6 @@ todos:
     notes: Major alternative approach focusing on bankroll, not just accuracy.
 
 done:
-  - id: ordinal_loss_pairwise
-    description: Implement Ordinal Loss (objective="rank:pairwise" in XGBoost)
-    priority: P0
-    notes: Alternative to XGBRanker, CatBoost YetiRank, LightGBM Lambdarank. Start with simplest.
   - id: probability_calibration
     description: Add Isotonic Probability Calibration (CalibratedClassifierCV)
     priority: P0 
