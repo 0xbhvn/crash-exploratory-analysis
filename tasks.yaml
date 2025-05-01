@@ -1,36 +1,76 @@
 todos:
-  # P0 - Quick Wins
-  - id: ordinal_loss_pairwise
-    description: Implement Ordinal Loss (e.g., rank:pairwise, XGBRanker)
+  # P0 - Ordinal Handling (Revisit)
+  - id: ordinal_loss_revisit
+    description: Revisit Ordinal Loss Implementation (e.g., XGBRanker, CatBoost YetiRank)
     priority: P0
-    notes: Initial 'rank:pairwise' attempt failed due to data structure mismatch. Revisit with XGBRanker or different approach.
-  # P1 - Stability & Tuning
+    notes: Initial 'rank:pairwise' attempt failed. Need alternative approach like XGBRanker or external libraries.
+
+  # P1 - Classical Pipeline Tuning
   - id: rolling_cv
-    description: Implement Rolling Cross-Validation (TimeSeriesSplit)
+    description: Implement Rolling Cross-Validation (TimeSeriesSplit, k-folds)
     priority: P1
+    notes: Average metrics across folds, potentially adapt early stopping per fold.
+  - id: focal_loss
+    description: Implement Focal Loss (Custom XGBoost or LightGBM)
+    priority: P1
+    notes: Helps focus on hard-to-classify examples, potentially better than simple class weights.
   - id: optuna_hpo
     description: Add Hyperparameter Optimization (Optuna) with Rolling CV
     priority: P1
     depends_on: rolling_cv
+    notes: Search eta, max_depth, gamma, lambda, min_child_weight, subsample, colsample_bytree.
   - id: custom_class_weights
     description: Apply Custom Class Weights (Focus on class 1 recall)
     priority: P1
-  # P2 - Feature Engineering
+    notes: Alternative/complement to focal loss, targeting specific recall issues.
+
+  # P2 - Richer Temporal Features
   - id: richer_lags
-    description: Engineer Richer Lag Features (exp-decay mean, volatility, inter-arrival)
+    description: Engineer Richer Lag Features (exp-decay mean, volatility, inter-arrival, session features)
     priority: P2
+    notes: Add exponential decay lags, inter-arrival times, session info (daily reset, weekend), bust volatility.
   - id: hmm_regime_flag
-    description: Add Hidden-Markov Model Regime Flag Feature
+    description: Add Hidden-Markov Model Regime Flag Feature (2-state on volatility)
     priority: P2
-  # P3/P4 - Alternative Models (Larger Efforts)
+    notes: Capture potential calm/wild market phases.
+  - id: shap_interactions
+    description: Add SHAP-guided Feature Interaction Terms
+    priority: P2
+    notes: Run SHAP analysis once to identify and explicitly add important pairwise interactions.
+
+  # P3 - Sequence Models Exploration
   - id: explore_tcn
     description: Prototype Sequence Model (Temporal Convolutional Network)
     priority: P3
-    notes: Major alternative model architecture.
+    notes: Handles long receptive field, potentially better accuracy (target 55-57%).
+  - id: explore_gru_lstm
+    description: Prototype Sequence Model (GRU/LSTM)
+    priority: P3
+    notes: Baseline recurrent model approach.
+  - id: explore_transformer
+    description: Prototype Sequence Model (Small Transformer Encoder)
+    priority: P3
+    notes: Capture periodicity/regimes via self-attention.
+
+  # P4 - Reinforcement Learning Policy
   - id: explore_rl
-    description: Explore Reinforcement Learning Policy for Bankroll Optimization
+    description: Explore RL Policy for Bet Sizing/Skipping (C51/PPO)
     priority: P4
-    notes: Major alternative approach focusing on bankroll, not just accuracy.
+    notes: Optimize bankroll directly using calibrated probabilities. Needs env simulation.
+
+  # P5 - Online/Streaming Upgrades
+  - id: online_incremental_training
+    description: Implement Online Incremental Model Training
+    priority: P5
+    notes: Use sliding window to fine-tune daily/regularly for drift.
+  - id: online_drift_alarms
+    description: Implement Drift Alarms (e.g., KS-test on predictions)
+    priority: P5
+    notes: Monitor prediction distribution for significant changes.
+  - id: online_shadow_validation
+    description: Implement Shadow Validation Loop
+    priority: P5
+    notes: Continuously monitor live accuracy and trigger retraining if performance degrades.
 
 done:
   - id: probability_calibration
