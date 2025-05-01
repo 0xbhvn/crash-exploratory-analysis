@@ -14,11 +14,6 @@ todos:
     description: Implement Focal Loss (Custom XGBoost or LightGBM)
     priority: P1
     notes: Helps focus on hard-to-classify examples, potentially better than simple class weights.
-  - id: optuna_hpo
-    description: Add Hyperparameter Optimization (Optuna) with Rolling CV
-    priority: P1
-    depends_on: rolling_cv
-    notes: Search eta, max_depth, gamma, lambda, min_child_weight, subsample, colsample_bytree.
   - id: custom_class_weights
     description: Apply Custom Class Weights (Focus on class 1 recall)
     priority: P1
@@ -75,4 +70,9 @@ todos:
 done:
   - id: probability_calibration
     description: Add Isotonic Probability Calibration (CalibratedClassifierCV)
-    priority: P0 
+    priority: P0
+  - id: optuna_hpo
+    description: Add Hyperparameter Optimization (Optuna) with Rolling CV
+    priority: P1
+    depends_on: rolling_cv
+    notes: Initial implementation uses single train/test split due to dependency. Revisit after rolling_cv is done. 

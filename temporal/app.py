@@ -23,7 +23,7 @@ from utils.rich_summary import display_output_summary, display_custom_output_sum
 from temporal.loader import load_data
 from temporal.features import create_temporal_features
 from temporal.splitting import temporal_train_test_split
-from temporal.training import train_temporal_model
+from temporal.training import train_temporal_model, run_hpo_trial
 from temporal.evaluation import analyze_temporal_performance, analyze_recall_improvements
 from temporal.prediction import make_temporal_prediction
 from temporal.true_predict import make_true_predictions, analyze_true_prediction_results
@@ -40,8 +40,9 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description='Temporal Analysis for Crash Game 10× Streak Prediction')
 
-    parser.add_argument('--mode', choices=['train', 'predict', 'true_predict', 'next_streak'], default='train',
-                        help='Mode to run the script in (train, predict, true_predict, or next_streak)')
+    parser.add_argument('--mode', choices=['train', 'predict', 'true_predict', 'next_streak', 'optimize_hpo'],
+                        default='train',
+                        help='Mode to run the script in (train, predict, true_predict, next_streak, or optimize_hpo)')
 
     parser.add_argument('--input', type=str, required=True,
                         help='Path to input CSV file with game data')
@@ -104,6 +105,13 @@ def parse_arguments():
 
     parser.add_argument('--colsample_bytree', type=float, default=0.8,
                         help='Subsample ratio of columns per tree (default: 0.8)')
+
+    # --- Arguments for Optuna HPO Mode ---
+    parser.add_argument('--n_trials', type=int, default=50,
+                        help='Number of trials for Optuna HPO (default: 50)')
+    parser.add_argument('--hpo_metric', type=str, default='log_loss',
+                        choices=['log_loss', 'accuracy'],
+                        help='Metric to optimize during HPO (default: log_loss)')
 
     return parser.parse_args()
 
@@ -797,6 +805,61 @@ def _display_prediction_output_summary(output_path, prediction_df, output_dir):
     display_table(summary_table)
 
 
+def optimize_hpo_mode(args):
+    """
+    Run Optuna hyperparameter optimization.
+    NOTE: Currently uses single train/test split, not rolling CV.
+    """
+    import optuna
+    from temporal.training import run_hpo_trial  # We will create this function
+
+    print_panel(
+        f"Hyperparameter Optimization Mode (Optuna)\n"
+        f"Objective: Minimize validation {args.hpo_metric}\n"
+        f"Number of Trials: {args.n_trials}",
+        title="Optuna HPO",
+        style="yellow bold"
+    )
+    print_warning(
+        "Note: Using single train/test split for evaluation in this mode. Add Rolling CV for robust results.")
+
+    # Load data and perform initial split to pass to trials
+    streak_df = load_data(args.input, args.multiplier_threshold)
+    features_df, feature_cols, _ = create_temporal_features(
+        streak_df, lookback_window=args.lookback)
+    X_train, y_train, X_test, y_test, _ = temporal_train_test_split(
+        features_df, feature_cols, test_size=args.test_size)
+
+    # Create study and optimize
+    study = optuna.create_study(
+        direction='minimize' if args.hpo_metric == 'log_loss' else 'maximize')
+
+    # Pass necessary args to the objective function via lambda or functools.partial
+    def objective_func(trial): return run_hpo_trial(
+        trial, args, X_train, y_train, X_test, y_test, feature_cols)
+
+    study.optimize(objective_func, n_trials=args.n_trials)
+
+    # Print results
+    print_success("\n--- Optuna HPO Complete ---")
+    print_info(f"Number of finished trials: {len(study.trials)}")
+
+    best_trial = study.best_trial
+    metric_name = args.hpo_metric
+    print_success(
+        f"Best trial achieved validation {metric_name}: {best_trial.value:.6f}")
+    print_info("Best hyperparameters found:")
+
+    best_params_table = create_table(
+        "Best Hyperparameters", ["Parameter", "Value"])
+    for key, value in best_trial.params.items():
+        add_table_row(best_params_table, [key, str(value)])
+    display_table(best_params_table)
+
+    print_warning(
+        "To use these parameters, run the 'train' mode with the corresponding arguments.")
+
+
 def main():
     """
     Main function for the temporal analysis script.
@@ -823,6 +886,8 @@ def main():
         true_predict_mode(args)
     elif args.mode == 'next_streak':
         next_streak_mode(args)
+    elif args.mode == 'optimize_hpo':  # Added HPO mode
+        optimize_hpo_mode(args)
     else:
         print_error(f"Unknown mode: {args.mode}")
         sys.exit(1)

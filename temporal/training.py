@@ -10,6 +10,7 @@ import pandas as pd
 import xgboost as xgb
 import joblib
 import matplotlib.pyplot as plt
+import argparse
 from datetime import datetime
 from typing import Dict, List, Tuple, Any
 from sklearn.preprocessing import StandardScaler
@@ -21,6 +22,7 @@ from imblearn.over_sampling import SMOTE
 from utils.logger_config import (
     print_info, print_success, create_table, add_table_row, display_table
 )
+import optuna
 
 
 def train_temporal_model(X_train, y_train, X_test, y_test, feature_cols, output_dir,
@@ -559,3 +561,83 @@ def _save_model_bundle(model_bundle, output_dir):
     joblib.dump(model_bundle, model_path)
 
     return model_path
+
+
+def run_hpo_trial(trial: optuna.trial.Trial, args: argparse.Namespace,
+                  X_train: pd.DataFrame, y_train: np.ndarray,
+                  X_test: pd.DataFrame, y_test: np.ndarray,
+                  feature_cols: List[str]) -> float:
+    """
+    Objective function for Optuna HPO.
+    Trains a model with suggested hyperparameters and returns the validation metric.
+    NOTE: Uses the single train/test split passed from optimize_hpo_mode.
+    """
+    # --- Hyperparameter Suggestion ---
+    # Define search space based on roadmap/common practice
+    params = {
+        'objective': 'multi:softprob',
+        'num_class': len(np.unique(y_train)),
+        'eval_metric': 'mlogloss',
+        'seed': 42,
+        'n_estimators': args.num_rounds,  # Use fixed n_estimators from args for now
+        # Use fixed early stopping from args
+        'early_stopping_rounds': args.early_stopping,
+
+        # Parameters to tune
+        'max_depth': trial.suggest_int('max_depth', 4, 10),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
+        'gamma': trial.suggest_float('gamma', 0, 5),  # Expanded range slightly
+        # L2 regularization
+        'reg_lambda': trial.suggest_float('reg_lambda', 0.5, 2.0),
+        'min_child_weight': trial.suggest_float('min_child_weight', 1, 10),
+        'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+        # Add other params like alpha (L1 reg) if desired later
+    }
+
+    # --- Data Preprocessing (Similar to train_temporal_model) ---
+    # NOTE: SMOTE/Class Weights are NOT tuned here, using args settings passed through
+    X_train_processed, y_train_processed, class_weight_dict = _preprocess_training_data(
+        X_train, y_train, args.use_smote, args.smote_k_neighbors, args.use_class_weights, args.weight_scale
+    )
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train_processed)
+    X_test_scaled = scaler.transform(X_test)
+    sample_weights = _get_sample_weights(y_train_processed, class_weight_dict)
+
+    # --- Model Training (Simplified for HPO trial) ---
+    try:
+        xgb_classifier = xgb.XGBClassifier(**params)
+        eval_set = [(X_train_scaled, y_train_processed),
+                    (X_test_scaled, y_test)]
+
+        xgb_classifier.fit(
+            X_train_scaled,
+            y_train_processed,
+            eval_set=eval_set,
+            sample_weight=sample_weights,
+            verbose=False  # Suppress verbose output during HPO trials
+        )
+
+        # --- Evaluation (Using uncalibrated model for simplicity in HPO) ---
+        # Calibration adds complexity; optimize base model first. Can add later if needed.
+        y_pred_proba = xgb_classifier.predict_proba(X_test_scaled)
+
+        if args.hpo_metric == 'log_loss':
+            # Handle potential log loss errors with clipping
+            eps = 1e-15
+            y_pred_proba = np.clip(y_pred_proba, eps, 1 - eps)
+            metric_value = log_loss(y_test, y_pred_proba)
+        elif args.hpo_metric == 'accuracy':
+            y_pred = np.argmax(y_pred_proba, axis=1)
+            metric_value = accuracy_score(y_test, y_pred)
+        else:
+            # Should not happen due to choices in argparse
+            raise ValueError(f"Unsupported hpo_metric: {args.hpo_metric}")
+
+    except Exception as e:
+        print_warning(f"Trial {trial.number} failed: {e}")
+        # Return a value indicating failure (e.g., high log loss or low accuracy)
+        metric_value = float('inf') if args.hpo_metric == 'log_loss' else 0.0
+
+    return metric_value
