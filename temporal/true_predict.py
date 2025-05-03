@@ -14,6 +14,9 @@ from utils.logger_config import (
     print_info, print_success, print_warning, print_error,
     create_table, add_table_row, display_table
 )
+from rich.progress import Progress
+# Import the main feature creation function
+from temporal.features import create_temporal_features
 
 
 def make_true_predictions(model_bundle: Dict, streak_df: pd.DataFrame, num_streaks: int = 200) -> pd.DataFrame:
@@ -23,140 +26,176 @@ def make_true_predictions(model_bundle: Dict, streak_df: pd.DataFrame, num_strea
     Args:
         model_bundle: Dictionary containing model and preprocessing info
         streak_df: DataFrame with all streak data
-        num_streaks: Number of most recent streaks to predict
+        num_streaks: Number of most recent streaks to predict (or None for all possible)
 
     Returns:
         DataFrame with predictions and actual values
     """
     # Extract model components
-    model = model_bundle['model']
+    model = model_bundle['model']  # This is the CalibratedClassifierCV
     scaler = model_bundle['scaler']
     feature_cols = model_bundle['feature_cols']
     percentile_values = model_bundle.get('percentile_values', [3.0, 7.0, 14.0])
 
-    # Get the most recent streaks
-    if num_streaks and num_streaks < len(streak_df):
-        recent_streaks = streak_df.tail(num_streaks).copy()
+    # Use all streaks for potential history, filtering happens in the loop
+    all_streaks = streak_df.copy()
+
+    # Determine streaks to iterate over for prediction
+    if num_streaks and num_streaks < len(all_streaks):
+        start_index = len(all_streaks) - num_streaks
         print_info(
-            f"Using the {num_streaks} most recent streaks for prediction")
+            f"Processing the {num_streaks} most recent streaks for true prediction (indices {start_index} to {len(all_streaks)-1})")
     else:
-        recent_streaks = streak_df.copy()
-        print_info(f"Using all {len(streak_df)} streaks for prediction")
+        start_index = 20  # Default min_history
+        print_info(
+            f"Processing all possible streaks for true prediction (indices {start_index} to {len(all_streaks)-1})")
 
     # Create a list to store predictions
     predictions = []
 
     # Process streaks one by one in temporal order
-    # Start with a sufficient history (minimum 20 streaks)
-    min_history = 20
+    min_history = 20  # Minimum streaks needed before first prediction
+    # TODO: Make this consistent or parameterize? Using 5 for now.
     lookback_window = 5
-
-    print_info(
-        f"Processing {len(recent_streaks)} streaks with strict temporal boundaries")
 
     # Create a table to display available game ranges for each prediction
     game_ranges_table = create_table(
         "Available Game Ranges For Each Prediction",
         ["Prediction #", "Streak Number",
-            "Current Streak Games", "Available History Games"]
+            "Predicted Streak Games", "Available History Games"]
     )
-
     prediction_count = 0
+    total_streaks_to_process = len(all_streaks) - start_index
 
-    for i in range(min_history, len(recent_streaks)):
-        # Get current streak and all previous history
-        current_streak = recent_streaks.iloc[i:i+1]
-        historical_streaks = recent_streaks.iloc[:i]
+    # Ensure streaks are sorted temporally if not already
+    all_streaks = all_streaks.sort_values(
+        'temporal_idx').reset_index(drop=True)
 
-        # Verify no data leakage - critical assertion
-        assert current_streak.iloc[0]['start_game_id'] > historical_streaks.iloc[-1]['end_game_id'], \
-            f"Data leakage detected: Current streak {current_streak.iloc[0]['streak_number']} starts at " \
-            f"game {current_streak.iloc[0]['start_game_id']} which is not after the end of " \
-            f"the previous streak {historical_streaks.iloc[-1]['end_game_id']}"
+    # --- Add Progress Bar ---
+    with Progress() as progress:
+        task = progress.add_task(
+            "[cyan]Processing streaks...", total=total_streaks_to_process)
 
-        # Track game ranges
-        current_streak_range = f"{int(current_streak.iloc[0]['start_game_id'])} to {int(current_streak.iloc[0]['end_game_id'])}"
-        history_range = f"{int(historical_streaks.iloc[0]['start_game_id'])} to {int(historical_streaks.iloc[-1]['end_game_id'])}"
+        for i in range(start_index, len(all_streaks)):
+            # Streak i is the one we want to predict (the 'current' streak)
+            current_streak_info = all_streaks.iloc[i]
 
-        # Add to table (but only display first 10 rows to avoid console spam)
-        prediction_count += 1
-        if prediction_count <= 10:
-            add_table_row(game_ranges_table, [
-                str(prediction_count),
-                str(int(current_streak.iloc[0]['streak_number'])),
-                current_streak_range,
-                history_range
-            ])
+            # History is everything *before* streak i
+            historical_streaks = all_streaks.iloc[:i]
 
-        # Create features using only historical data
-        features = _create_strictly_temporal_features(
-            historical_streaks,
-            current_streak,
-            lookback_window=lookback_window
-        )
+            # Ensure minimum history is met
+            if len(historical_streaks) < min_history:
+                # Still advance progress even if skipping
+                progress.update(task, advance=1)
+                continue
 
-        # Extract feature values
-        if not all(col in features.columns for col in feature_cols):
+            # Verify no data leakage
+            assert current_streak_info['start_game_id'] > historical_streaks.iloc[-1]['end_game_id'], \
+                f"Data leakage detected at streak {current_streak_info['streak_number']}"
+
+            # === Feature Generation using imported function ===
+            # Call with verbose=False to suppress logs inside the loop
+            features_df_hist, _, _ = create_temporal_features(
+                historical_streaks,
+                lookback_window=lookback_window,
+                verbose=False
+            )
+
+            if features_df_hist.empty:
+                print_warning(
+                    f"Feature generation returned empty DataFrame for history before streak {current_streak_info['streak_number']}. Skipping prediction.")
+                progress.update(task, advance=1)  # Advance progress
+                continue
+
+            # Get the features corresponding to the end of the historical period (last row)
+            features_for_pred_row = features_df_hist.iloc[[-1]]
+
+            # Handle missing columns (though ideally create_temporal_features is consistent)
             missing_cols = [
-                col for col in feature_cols if col not in features.columns]
-            print_warning(
-                f"Missing {len(missing_cols)} feature columns. Adding with default 0 values.")
-            for col in missing_cols:
-                features[col] = 0
+                col for col in feature_cols if col not in features_for_pred_row.columns]
+            if missing_cols:
+                print_warning(
+                    f"Missing features for streak {current_streak_info['streak_number']}: {missing_cols}. Adding defaults.")
+                for col in missing_cols:
+                    # Use .loc to avoid warning
+                    features_for_pred_row.loc[:, col] = 0
 
-        X = features[feature_cols]
+            # Ensure columns are in the correct order
+            X_predict = features_for_pred_row[feature_cols]
+            # === End Feature Generation ===
 
-        # Scale features
-        X_scaled = scaler.transform(X)
+            # Scale features
+            X_scaled = scaler.transform(X_predict)
 
-        # Make prediction using the loaded Calibrator (which expects NumPy array)
-        y_pred_proba = model.predict_proba(X_scaled)
-        y_pred = np.argmax(y_pred_proba, axis=1)
+            # Make prediction using the calibrated model
+            y_pred_proba = model.predict_proba(X_scaled)
+            y_pred = np.argmax(y_pred_proba, axis=1)[
+                0]  # Get single prediction
+            confidence = np.max(y_pred_proba, axis=1)[0]
 
-        # Get actual target cluster
-        streak_length = current_streak.iloc[0]['streak_length']
-        target_cluster = _get_target_cluster(streak_length, percentile_values)
+            # Get actual target cluster for the current streak
+            streak_length = current_streak_info['streak_length']
+            target_cluster = _get_target_cluster(
+                streak_length, percentile_values)
 
-        # Get prediction confidence
-        confidence = np.max(y_pred_proba, axis=1)[0]
+            # Map to descriptive categories
+            cluster_to_desc = {
+                0: 'short',
+                1: 'medium_short',
+                2: 'medium_long',
+                3: 'long'
+            }
+            prediction_desc = cluster_to_desc[y_pred]
+            actual_desc = cluster_to_desc[target_cluster]
 
-        # Map to descriptive categories
-        cluster_to_desc = {
-            0: 'short',
-            1: 'medium_short',
-            2: 'medium_long',
-            3: 'long'
-        }
+            # Create prediction record
+            prediction = {
+                'streak_number': current_streak_info['streak_number'],
+                'start_game_id': current_streak_info['start_game_id'],
+                'end_game_id': current_streak_info['end_game_id'],
+                'streak_length': streak_length,
+                'actual_cluster': target_cluster,
+                'actual_desc': actual_desc,
+                'predicted_cluster': y_pred,
+                'prediction_desc': prediction_desc,
+                'correct': (y_pred == target_cluster),
+                'confidence': confidence,
+                'available_history_start': historical_streaks.iloc[0]['start_game_id'],
+                'available_history_end': historical_streaks.iloc[-1]['end_game_id']
+            }
+            for j in range(len(y_pred_proba[0])):
+                prediction[f'prob_class_{j}'] = y_pred_proba[0][j]
 
-        prediction_desc = cluster_to_desc[y_pred[0]]
-        actual_desc = cluster_to_desc[target_cluster]
+            predictions.append(prediction)
 
-        # Create prediction record
-        prediction = {
-            'streak_number': current_streak.iloc[0]['streak_number'],
-            'start_game_id': current_streak.iloc[0]['start_game_id'],
-            'end_game_id': current_streak.iloc[0]['end_game_id'],
-            'streak_length': streak_length,
-            'actual_cluster': target_cluster,
-            'actual_desc': actual_desc,
-            'predicted_cluster': y_pred[0],
-            'prediction_desc': prediction_desc,
-            'correct': (y_pred[0] == target_cluster),
-            'confidence': confidence,
-            'available_history_start': historical_streaks.iloc[0]['start_game_id'],
-            'available_history_end': historical_streaks.iloc[-1]['end_game_id']
-        }
+            # Update and display game ranges table periodically
+            prediction_count += 1
+            if prediction_count <= 10 or prediction_count % 1000 == 0:  # Show first 10 and then every 1000
+                current_streak_range = f"{int(current_streak_info['start_game_id'])} to {int(current_streak_info['end_game_id'])}"
+                history_range = f"{int(historical_streaks.iloc[0]['start_game_id'])} to {int(historical_streaks.iloc[-1]['end_game_id'])}"
+                # Clear previous table rows if needed (not directly supported by rich table?)
+                # For simplicity, just add rows. Table might get long in logs.
+                if prediction_count <= 10:
+                    add_table_row(game_ranges_table, [
+                        str(prediction_count),
+                        str(int(current_streak_info['streak_number'])),
+                        current_streak_range,
+                        history_range
+                    ])
+                if prediction_count == 10:  # Display initial table
+                    display_table(game_ranges_table)
 
-        # Add probability for each class
-        for j in range(len(y_pred_proba[0])):
-            prediction[f'prob_class_{j}'] = y_pred_proba[0][j]
+            # Update progress bar
+            progress.update(task, advance=1)
+            # --- End Progress Bar Context ---
 
-        predictions.append(prediction)
-
-    # Display the game ranges table
-    display_table(game_ranges_table)
-    print_info(
-        f"Displayed first 10 of {prediction_count} predictions. All ranges stored in output CSV.")
+    # Display final count message if not already shown
+    if prediction_count > 10:
+        print_info(
+            f"Processed {prediction_count} total predictions. Final ranges stored in output CSV.")
+    elif prediction_count <= 10 and prediction_count > 0:
+        # Display if less than 10 predictions were made
+        display_table(game_ranges_table)
 
     # Create DataFrame from predictions
     predictions_df = pd.DataFrame(predictions)
@@ -185,163 +224,12 @@ def make_true_predictions(model_bundle: Dict, streak_df: pd.DataFrame, num_strea
     return predictions_df
 
 
-def _create_strictly_temporal_features(
-    historical_streaks: pd.DataFrame,
-    current_streak: pd.DataFrame,
-    lookback_window: int = 5
-) -> pd.DataFrame:
-    """
-    Create strictly temporal features for the current streak using only historical data.
-
-    Args:
-        historical_streaks: DataFrame with historical streak data
-        current_streak: DataFrame with the current streak to predict
-        lookback_window: Number of previous streaks to use for features
-
-    Returns:
-        DataFrame with temporal features for the current streak
-    """
-    # Initialize features DataFrame with the current streak
-    features = current_streak.copy()
-
-    # Get the most recent historical streaks up to lookback_window
-    recent_history = historical_streaks.tail(lookback_window).copy()
-
-    # Create lagged features
-    for i in range(1, min(lookback_window, len(recent_history)) + 1):
-        if i <= len(recent_history):
-            historical_idx = len(recent_history) - i
-            features[f'prev{i}_length'] = recent_history.iloc[historical_idx]['streak_length']
-            features[f'prev{i}_hit_mult'] = recent_history.iloc[historical_idx]['hit_multiplier']
-
-            # Create streak length difference features
-            if i > 1:
-                prev_length = features[f'prev{i-1}_length'].iloc[0]
-                current_length = features[f'prev{i}_length'].iloc[0]
-                features[f'diff{i-1}_to_{i}'] = prev_length - current_length
-
-    # Calculate rolling statistics
-    lengths = []
-    hit_mults = []
-
-    # Collect past streak lengths and hit multipliers in reverse order (most recent first)
-    for i in range(min(lookback_window, len(recent_history))):
-        idx = len(recent_history) - 1 - i
-        lengths.append(recent_history.iloc[idx]['streak_length'])
-        hit_mults.append(recent_history.iloc[idx]['hit_multiplier'])
-
-    # Calculate rolling statistics for different window sizes
-    for window in [3, 5]:
-        if window <= len(lengths):
-            # Rolling mean
-            features[f'rolling_mean_{window}'] = np.mean(lengths[:window])
-
-            # Rolling standard deviation
-            if len(lengths[:window]) > 1:
-                features[f'rolling_std_{window}'] = np.std(lengths[:window])
-            else:
-                features[f'rolling_std_{window}'] = 0
-
-            # Rolling max and min
-            features[f'rolling_max_{window}'] = np.max(lengths[:window])
-            features[f'rolling_min_{window}'] = np.min(lengths[:window])
-
-            # Category percentages
-            short_count = sum(1 for l in lengths[:window] if l <= 3)
-            medium_count = sum(1 for l in lengths[:window] if 3 < l <= 14)
-            long_count = sum(1 for l in lengths[:window] if l > 14)
-
-            features[f'short_pct_{window}'] = short_count / window
-            features[f'medium_pct_{window}'] = medium_count / window
-            features[f'long_pct_{window}'] = long_count / window
-
-            # Hit multiplier rolling stats
-            if len(hit_mults[:window]) > 0:
-                features[f'hit_mult_mean_{window}'] = np.mean(
-                    hit_mults[:window])
-                if len(hit_mults) > window:
-                    features[f'hit_mult_trend_{window}'] = features[f'hit_mult_mean_{window}'].iloc[0] - hit_mults[window]
-                else:
-                    features[f'hit_mult_trend_{window}'] = 0
-
-    # Add category features
-    categories = []
-    for length in lengths:
-        if length <= 3:
-            categories.append('short')
-        elif length <= 7:
-            categories.append('medium_short')
-        elif length <= 14:
-            categories.append('medium_long')
-        else:
-            categories.append('long')
-
-    # Time since features
-    time_since = {
-        'short': 99,
-        'medium_short': 99,
-        'medium_long': 99,
-        'long': 99
-    }
-
-    # Calculate time since each category
-    for i, cat in enumerate(categories):
-        time_since[cat] = i
-
-    for cat in time_since:
-        features[f'time_since_{cat}'] = time_since[cat]
-
-    # Category run length features
-    if len(categories) > 0:
-        run_counter = 1
-        prev_cat = categories[0]
-
-        for i in range(1, len(categories)):
-            if categories[i] == prev_cat:
-                run_counter += 1
-            else:
-                run_counter = 1
-                prev_cat = categories[i]
-
-        features['category_run_length'] = run_counter
-        features['prev_run_length'] = run_counter
-    else:
-        features['category_run_length'] = 1
-        features['prev_run_length'] = 1
-
-    # One-hot category features
-    for cat in ['short', 'medium_short', 'medium_long', 'long']:
-        if len(categories) > 0:
-            features[f'prev_cat_{cat}'] = 1 if categories[0] == cat else 0
-        else:
-            features[f'prev_cat_{cat}'] = 0
-
-    # Set 'same_as_prev' feature
-    if len(categories) > 0:
-        streak_length = features['streak_length'].iloc[0]
-        current_cat = 'short'
-        if streak_length > 3 and streak_length <= 7:
-            current_cat = 'medium_short'
-        elif streak_length > 7 and streak_length <= 14:
-            current_cat = 'medium_long'
-        elif streak_length > 14:
-            current_cat = 'long'
-
-        features['same_as_prev'] = 1 if current_cat == categories[0] else 0
-    else:
-        features['same_as_prev'] = 0
-
-    return features
-
-
 def _get_target_cluster(streak_length: int, percentile_values: List[float]) -> int:
     """
     Determine the target cluster for a given streak length.
-
     Args:
         streak_length: Length of the streak
         percentile_values: List of percentile values for clustering
-
     Returns:
         Target cluster (0, 1, 2, or 3)
     """
@@ -358,13 +246,12 @@ def _get_target_cluster(streak_length: int, percentile_values: List[float]) -> i
 def analyze_true_prediction_results(predictions_df: pd.DataFrame, output_dir: str) -> None:
     """
     Analyze and display true prediction results.
-
     Args:
         predictions_df: DataFrame with prediction results
         output_dir: Directory to save output files
     """
     # Create a confusion matrix
-    confusion_matrix = create_table(
+    confusion_matrix_table = create_table(  # Renamed variable to avoid conflict
         "True Prediction Confusion Matrix",
         ["Actual\\Predicted", "Pred: Short", "Pred: Medium-Short",
             "Pred: Medium-Long", "Pred: Long"]
@@ -396,9 +283,9 @@ def analyze_true_prediction_results(predictions_df: pd.DataFrame, output_dir: st
             if i == j:
                 cell_value += f" ({recalls[i]} recall)"
             row.append(cell_value)
-        add_table_row(confusion_matrix, row)
+        add_table_row(confusion_matrix_table, row)
 
-    display_table(confusion_matrix)
+    display_table(confusion_matrix_table)
 
     # Display a summary of game ranges
     range_summary_table = create_table(
@@ -406,58 +293,58 @@ def analyze_true_prediction_results(predictions_df: pd.DataFrame, output_dir: st
         ["Metric", "Start Game ID", "End Game ID", "Range Size"]
     )
 
-    # For first prediction
-    first_pred = predictions_df.iloc[0]
-    first_streak_range = int(
-        first_pred['end_game_id']) - int(first_pred['start_game_id']) + 1
-    first_history_range = int(
-        first_pred['available_history_end']) - int(first_pred['available_history_start']) + 1
+    # Handle case where predictions_df might be empty
+    if not predictions_df.empty:
+        # For first prediction
+        first_pred = predictions_df.iloc[0]
+        first_streak_range = int(
+            first_pred['end_game_id']) - int(first_pred['start_game_id']) + 1
+        first_history_range = int(
+            first_pred['available_history_end']) - int(first_pred['available_history_start']) + 1
 
-    add_table_row(range_summary_table, [
-        "First Prediction - Current Streak",
-        f"{int(first_pred['start_game_id'])}",
-        f"{int(first_pred['end_game_id'])}",
-        f"{first_streak_range} games"
-    ])
+        add_table_row(range_summary_table, [
+            "First Prediction - Current Streak",
+            f"{int(first_pred['start_game_id'])}",
+            f"{int(first_pred['end_game_id'])}",
+            f"{first_streak_range} games"
+        ])
+        add_table_row(range_summary_table, [
+            "First Prediction - Available History",
+            f"{int(first_pred['available_history_start'])}",
+            f"{int(first_pred['available_history_end'])}",
+            f"{first_history_range} games"
+        ])
 
-    add_table_row(range_summary_table, [
-        "First Prediction - Available History",
-        f"{int(first_pred['available_history_start'])}",
-        f"{int(first_pred['available_history_end'])}",
-        f"{first_history_range} games"
-    ])
+        # For last prediction
+        last_pred = predictions_df.iloc[-1]
+        last_streak_range = int(
+            last_pred['end_game_id']) - int(last_pred['start_game_id']) + 1
+        last_history_range = int(
+            last_pred['available_history_end']) - int(last_pred['available_history_start']) + 1
 
-    # For last prediction
-    last_pred = predictions_df.iloc[-1]
-    last_streak_range = int(
-        last_pred['end_game_id']) - int(last_pred['start_game_id']) + 1
-    last_history_range = int(
-        last_pred['available_history_end']) - int(last_pred['available_history_start']) + 1
+        add_table_row(range_summary_table, [
+            "Last Prediction - Current Streak",
+            f"{int(last_pred['start_game_id'])}",
+            f"{int(last_pred['end_game_id'])}",
+            f"{last_streak_range} games"
+        ])
+        add_table_row(range_summary_table, [
+            "Last Prediction - Available History",
+            f"{int(last_pred['available_history_start'])}",
+            f"{int(last_pred['available_history_end'])}",
+            f"{last_history_range} games"
+        ])
 
-    add_table_row(range_summary_table, [
-        "Last Prediction - Current Streak",
-        f"{int(last_pred['start_game_id'])}",
-        f"{int(last_pred['end_game_id'])}",
-        f"{last_streak_range} games"
-    ])
+        # Total range
+        total_range = int(last_pred['end_game_id']) - \
+            int(first_pred['available_history_start']) + 1
 
-    add_table_row(range_summary_table, [
-        "Last Prediction - Available History",
-        f"{int(last_pred['available_history_start'])}",
-        f"{int(last_pred['available_history_end'])}",
-        f"{last_history_range} games"
-    ])
-
-    # Total range
-    total_range = int(last_pred['end_game_id']) - \
-        int(first_pred['available_history_start']) + 1
-
-    add_table_row(range_summary_table, [
-        "Total Game Range Covered",
-        f"{int(first_pred['available_history_start'])}",
-        f"{int(last_pred['end_game_id'])}",
-        f"{total_range} games"
-    ])
+        add_table_row(range_summary_table, [
+            "Total Game Range Covered",
+            f"{int(first_pred['available_history_start'])}",
+            f"{int(last_pred['end_game_id'])}",
+            f"{total_range} games"
+        ])
 
     display_table(range_summary_table)
 
@@ -468,8 +355,9 @@ def analyze_true_prediction_results(predictions_df: pd.DataFrame, output_dir: st
          "Available History", "Actual", "Predicted", "Confidence"]
     )
 
-    # Add the most recent predictions
-    for _, row in predictions_df.tail(10).iterrows():
+    # Add the most recent predictions (handle empty case)
+    # Show up to 10
+    for _, row in predictions_df.tail(min(10, len(predictions_df))).iterrows():
         history_range = f"{int(row['available_history_start'])} to {int(row['available_history_end'])}"
         add_table_row(sample_table, [
             str(int(row['streak_number'])),
@@ -495,15 +383,15 @@ def analyze_true_prediction_results(predictions_df: pd.DataFrame, output_dir: st
         'available_history_start', 'available_history_end'
     ]].copy()
 
-    game_ranges_df['streak_range'] = game_ranges_df.apply(
-        lambda row: f"{int(row['start_game_id'])} to {int(row['end_game_id'])}",
-        axis=1
-    )
-
-    game_ranges_df['history_range'] = game_ranges_df.apply(
-        lambda row: f"{int(row['available_history_start'])} to {int(row['available_history_end'])}",
-        axis=1
-    )
+    if not game_ranges_df.empty:
+        game_ranges_df['streak_range'] = game_ranges_df.apply(
+            lambda row: f"{int(row['start_game_id'])} to {int(row['end_game_id'])}",
+            axis=1
+        )
+        game_ranges_df['history_range'] = game_ranges_df.apply(
+            lambda row: f"{int(row['available_history_start'])} to {int(row['available_history_end'])}",
+            axis=1
+        )
 
     ranges_output_path = os.path.join(
         output_dir, 'true_prediction_game_ranges.csv')

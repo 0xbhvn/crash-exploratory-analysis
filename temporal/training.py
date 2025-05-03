@@ -18,6 +18,7 @@ from sklearn.metrics import log_loss, accuracy_score, classification_report
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.frozen import FrozenEstimator
+from sklearn.model_selection import TimeSeriesSplit
 from imblearn.over_sampling import SMOTE
 from utils.logger_config import (
     print_info, print_success, create_table, add_table_row, display_table
@@ -563,81 +564,104 @@ def _save_model_bundle(model_bundle, output_dir):
     return model_path
 
 
-def run_hpo_trial(trial: optuna.trial.Trial, args: argparse.Namespace,
-                  X_train: pd.DataFrame, y_train: np.ndarray,
-                  X_test: pd.DataFrame, y_test: np.ndarray,
-                  feature_cols: List[str]) -> float:
+def run_hpo_trial_cv(trial: optuna.trial.Trial, args: argparse.Namespace,
+                     X_train_full: pd.DataFrame, y_train_full: np.ndarray,
+                     feature_cols: List[str]) -> float:
     """
-    Objective function for Optuna HPO.
-    Trains a model with suggested hyperparameters and returns the validation metric.
-    NOTE: Uses the single train/test split passed from optimize_hpo_mode.
+    Objective function for Optuna HPO using TimeSeriesSplit Cross-Validation.
+    Trains a model with suggested hyperparameters on multiple temporal folds 
+    and returns the average validation metric.
     """
     # --- Hyperparameter Suggestion ---
-    # Define search space based on roadmap/common practice
     params = {
         'objective': 'multi:softprob',
-        'num_class': len(np.unique(y_train)),
+        'num_class': len(np.unique(y_train_full)),
         'eval_metric': 'mlogloss',
         'seed': 42,
-        'n_estimators': args.num_rounds,  # Use fixed n_estimators from args for now
-        # Use fixed early stopping from args
+        'n_estimators': args.num_rounds,
         'early_stopping_rounds': args.early_stopping,
-
-        # Parameters to tune
         'max_depth': trial.suggest_int('max_depth', 4, 10),
         'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1, log=True),
-        'gamma': trial.suggest_float('gamma', 0, 5),  # Expanded range slightly
-        # L2 regularization
+        'gamma': trial.suggest_float('gamma', 0, 5),
         'reg_lambda': trial.suggest_float('reg_lambda', 0.5, 2.0),
         'min_child_weight': trial.suggest_float('min_child_weight', 1, 10),
         'subsample': trial.suggest_float('subsample', 0.6, 1.0),
         'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
-        # Add other params like alpha (L1 reg) if desired later
     }
 
-    # --- Data Preprocessing (Similar to train_temporal_model) ---
-    # NOTE: SMOTE/Class Weights are NOT tuned here, using args settings passed through
-    X_train_processed, y_train_processed, class_weight_dict = _preprocess_training_data(
-        X_train, y_train, args.use_smote, args.smote_k_neighbors, args.use_class_weights, args.weight_scale
-    )
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train_processed)
-    X_test_scaled = scaler.transform(X_test)
-    sample_weights = _get_sample_weights(y_train_processed, class_weight_dict)
+    fold_scores = []
+    tscv = TimeSeriesSplit(n_splits=args.n_splits)  # Use n_splits from args
 
-    # --- Model Training (Simplified for HPO trial) ---
-    try:
-        xgb_classifier = xgb.XGBClassifier(**params)
-        eval_set = [(X_train_scaled, y_train_processed),
-                    (X_test_scaled, y_test)]
+    print_info(
+        f"\n[Trial {trial.number}] Running {args.n_splits}-Fold TimeSeries CV...")
 
-        xgb_classifier.fit(
-            X_train_scaled,
-            y_train_processed,
-            eval_set=eval_set,
-            sample_weight=sample_weights,
-            verbose=False  # Suppress verbose output during HPO trials
+    for fold, (train_index, val_index) in enumerate(tscv.split(X_train_full)):
+        X_train_fold, X_val_fold = X_train_full.iloc[train_index], X_train_full.iloc[val_index]
+        y_train_fold, y_val_fold = y_train_full.iloc[train_index], y_train_full.iloc[val_index]
+
+        print_info(
+            f"  [Fold {fold+1}/{args.n_splits}] Train size: {len(X_train_fold)}, Val size: {len(X_val_fold)}")
+
+        # --- Data Preprocessing for Fold ---
+        # Note: Using args for SMOTE/Weights; ideally these could also be tuned
+        X_train_fold_processed, y_train_fold_processed, class_weight_dict = _preprocess_training_data(
+            X_train_fold, y_train_fold, args.use_smote, args.smote_k_neighbors,
+            args.use_class_weights, args.weight_scale
         )
+        scaler = StandardScaler()
+        X_train_fold_scaled = scaler.fit_transform(X_train_fold_processed)
+        X_val_fold_scaled = scaler.transform(
+            X_val_fold)  # Use scaler fitted on train fold
+        sample_weights = _get_sample_weights(
+            y_train_fold_processed, class_weight_dict)
 
-        # --- Evaluation (Using uncalibrated model for simplicity in HPO) ---
-        # Calibration adds complexity; optimize base model first. Can add later if needed.
-        y_pred_proba = xgb_classifier.predict_proba(X_test_scaled)
+        # --- Model Training for Fold ---
+        try:
+            xgb_classifier_fold = xgb.XGBClassifier(**params)
+            eval_set_fold = [
+                (X_train_fold_scaled, y_train_fold_processed), (X_val_fold_scaled, y_val_fold)]
 
-        if args.hpo_metric == 'log_loss':
-            # Handle potential log loss errors with clipping
-            eps = 1e-15
-            y_pred_proba = np.clip(y_pred_proba, eps, 1 - eps)
-            metric_value = log_loss(y_test, y_pred_proba)
-        elif args.hpo_metric == 'accuracy':
-            y_pred = np.argmax(y_pred_proba, axis=1)
-            metric_value = accuracy_score(y_test, y_pred)
-        else:
-            # Should not happen due to choices in argparse
-            raise ValueError(f"Unsupported hpo_metric: {args.hpo_metric}")
+            xgb_classifier_fold.fit(
+                X_train_fold_scaled,
+                y_train_fold_processed,
+                eval_set=eval_set_fold,
+                sample_weight=sample_weights,
+                verbose=False
+            )
 
-    except Exception as e:
-        print_warning(f"Trial {trial.number} failed: {e}")
-        # Return a value indicating failure (e.g., high log loss or low accuracy)
-        metric_value = float('inf') if args.hpo_metric == 'log_loss' else 0.0
+            # --- Evaluation for Fold ---
+            y_pred_proba_fold = xgb_classifier_fold.predict_proba(
+                X_val_fold_scaled)
 
-    return metric_value
+            if args.hpo_metric == 'log_loss':
+                eps = 1e-15
+                y_pred_proba_fold = np.clip(y_pred_proba_fold, eps, 1 - eps)
+                score = log_loss(y_val_fold, y_pred_proba_fold)
+            elif args.hpo_metric == 'accuracy':
+                y_pred_fold = np.argmax(y_pred_proba_fold, axis=1)
+                score = accuracy_score(y_val_fold, y_pred_fold)
+            else:
+                raise ValueError(f"Unsupported hpo_metric: {args.hpo_metric}")
+
+            print_info(
+                f"  [Fold {fold+1}/{args.n_splits}] Validation {args.hpo_metric}: {score:.6f}")
+            fold_scores.append(score)
+
+        except Exception as e:
+            print_warning(f"  [Fold {fold+1}/{args.n_splits}] Failed: {e}")
+            # Decide how to handle fold failure - skip or assign penalty
+            # Assigning penalty (worst possible score)
+            penalty_score = float(
+                'inf') if args.hpo_metric == 'log_loss' else 0.0
+            fold_scores.append(penalty_score)
+            break  # Optional: Stop trial if one fold fails critically
+
+    # --- Calculate Average Score ---
+    if not fold_scores:  # Handle case where all folds failed
+        print_error(f"[Trial {trial.number}] All folds failed.")
+        return float('inf') if args.hpo_metric == 'log_loss' else 0.0
+
+    average_score = np.mean(fold_scores)
+    print_info(
+        f"[Trial {trial.number}] Average validation {args.hpo_metric}: {average_score:.6f}")
+    return average_score

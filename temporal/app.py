@@ -23,7 +23,7 @@ from utils.rich_summary import display_output_summary, display_custom_output_sum
 from temporal.loader import load_data
 from temporal.features import create_temporal_features
 from temporal.splitting import temporal_train_test_split
-from temporal.training import train_temporal_model, run_hpo_trial
+from temporal.training import train_temporal_model, run_hpo_trial_cv
 from temporal.evaluation import analyze_temporal_performance, analyze_recall_improvements
 from temporal.prediction import make_temporal_prediction
 from temporal.true_predict import make_true_predictions, analyze_true_prediction_results
@@ -112,6 +112,9 @@ def parse_arguments():
     parser.add_argument('--hpo_metric', type=str, default='log_loss',
                         choices=['log_loss', 'accuracy'],
                         help='Metric to optimize during HPO (default: log_loss)')
+
+    parser.add_argument('--n_splits', type=int, default=5,
+                        help='Number of splits for TimeSeriesSplit Cross-Validation (default: 5)')
 
     return parser.parse_args()
 
@@ -808,35 +811,35 @@ def _display_prediction_output_summary(output_path, prediction_df, output_dir):
 def optimize_hpo_mode(args):
     """
     Run Optuna hyperparameter optimization.
-    NOTE: Currently uses single train/test split, not rolling CV.
+    Uses TimeSeriesSplit Cross-Validation for robust evaluation.
     """
     import optuna
-    from temporal.training import run_hpo_trial  # We will create this function
+    from temporal.training import run_hpo_trial_cv
 
     print_panel(
-        f"Hyperparameter Optimization Mode (Optuna)\n"
+        f"Hyperparameter Optimization Mode (Optuna with Rolling CV)\n"
         f"Objective: Minimize validation {args.hpo_metric}\n"
-        f"Number of Trials: {args.n_trials}",
+        f"Number of Trials: {args.n_trials}\n"
+        f"Number of CV Splits: {args.n_splits}",
         title="Optuna HPO",
         style="yellow bold"
     )
-    print_warning(
-        "Note: Using single train/test split for evaluation in this mode. Add Rolling CV for robust results.")
 
     # Load data and perform initial split to pass to trials
     streak_df = load_data(args.input, args.multiplier_threshold)
     features_df, feature_cols, _ = create_temporal_features(
         streak_df, lookback_window=args.lookback)
-    X_train, y_train, X_test, y_test, _ = temporal_train_test_split(
-        features_df, feature_cols, test_size=args.test_size)
+    X_train_full, y_train_full, _, _, _ = temporal_train_test_split(
+        features_df, feature_cols, return_full_data=True
+    )
 
     # Create study and optimize
     study = optuna.create_study(
         direction='minimize' if args.hpo_metric == 'log_loss' else 'maximize')
 
-    # Pass necessary args to the objective function via lambda or functools.partial
-    def objective_func(trial): return run_hpo_trial(
-        trial, args, X_train, y_train, X_test, y_test, feature_cols)
+    # Pass necessary args to the objective function via lambda
+    def objective_func(trial): return run_hpo_trial_cv(
+        trial, args, X_train_full, y_train_full, feature_cols)
 
     study.optimize(objective_func, n_trials=args.n_trials)
 
@@ -886,7 +889,7 @@ def main():
         true_predict_mode(args)
     elif args.mode == 'next_streak':
         next_streak_mode(args)
-    elif args.mode == 'optimize_hpo':  # Added HPO mode
+    elif args.mode == 'optimize_hpo':
         optimize_hpo_mode(args)
     else:
         print_error(f"Unknown mode: {args.mode}")

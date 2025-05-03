@@ -12,19 +12,21 @@ from utils.logger_config import (
 )
 
 
-def create_temporal_features(streak_df: pd.DataFrame, lookback_window: int = 5) -> Tuple[pd.DataFrame, List[str], List[float]]:
+def create_temporal_features(streak_df: pd.DataFrame, lookback_window: int = 5, verbose: bool = True) -> Tuple[pd.DataFrame, List[str], List[float]]:
     """
     Create strictly temporal features with no leakage.
 
     Args:
         streak_df: DataFrame with streak information
         lookback_window: Number of previous streaks to use for features
+        verbose: If True, print detailed logging messages.
 
     Returns:
         DataFrame with temporal features, feature column names, and percentile values
     """
-    print_info(
-        f"Creating strictly temporal features with lookback={lookback_window}")
+    if verbose:
+        print_info(
+            f"Creating strictly temporal features with lookback={lookback_window}")
 
     # Make a copy to avoid SettingWithCopyWarning
     features_df = streak_df.copy()
@@ -38,19 +40,21 @@ def create_temporal_features(streak_df: pd.DataFrame, lookback_window: int = 5) 
     features_df = _create_one_hot_features(features_df)
 
     # Get valid feature columns that don't cause data leakage
-    feature_cols = _get_valid_feature_columns(features_df)
+    feature_cols = _get_valid_feature_columns(features_df, verbose=verbose)
 
-    print_info(f"Created {len(feature_cols)} strictly temporal features")
+    if verbose:
+        print_info(f"Created {len(feature_cols)} strictly temporal features")
 
     # Calculate percentile values for target creation
-    percentile_values = _calculate_percentiles(streak_df)
+    percentile_values = _calculate_percentiles(streak_df, verbose=verbose)
 
     # Create target clusters
     features_df = _create_target_clusters(
         features_df, streak_df, percentile_values)
 
     # Display example features table
-    _display_feature_examples()
+    if verbose:
+        _display_feature_examples()
 
     return features_df, feature_cols, percentile_values
 
@@ -245,12 +249,13 @@ def _create_one_hot_features(features_df: pd.DataFrame) -> pd.DataFrame:
     return features_df
 
 
-def _get_valid_feature_columns(features_df: pd.DataFrame) -> List[str]:
+def _get_valid_feature_columns(features_df: pd.DataFrame, verbose: bool = True) -> List[str]:
     """
     Get valid feature columns that won't cause data leakage.
 
     Args:
-        features_df: DataFrame with all features
+        features_df: DataFrame with features
+        verbose: If True, print logging messages.
 
     Returns:
         List of valid feature column names
@@ -274,21 +279,24 @@ def _get_valid_feature_columns(features_df: pd.DataFrame) -> List[str]:
     all_cols = features_df.columns.tolist()
     feature_cols = [col for col in all_cols if col not in all_exclude_cols]
 
-    print_info(
-        f"Excluded {len(all_exclude_cols)} non-temporal features to prevent leakage")
+    # Only print excluded features if verbose
+    if verbose and len(exclude_cols) > 0:
+        print_info(
+            f"Excluded {len(exclude_cols)} non-temporal features to prevent leakage")
 
     return feature_cols
 
 
-def _calculate_percentiles(streak_df: pd.DataFrame) -> List[float]:
+def _calculate_percentiles(streak_df: pd.DataFrame, verbose: bool = True) -> List[float]:
     """
-    Calculate percentile values for streak clustering.
+    Calculate percentiles for streak length clustering.
 
     Args:
-        streak_df: DataFrame with streak information
+        streak_df: DataFrame with streak lengths
+        verbose: If True, print logging messages.
 
     Returns:
-        List of percentile values
+        List of percentile values [P25, P50, P75]
     """
     # Create target columns based on percentiles
     percentiles = [0.25, 0.50, 0.75]
@@ -301,7 +309,8 @@ def _calculate_percentiles(streak_df: pd.DataFrame) -> List[float]:
         [f"P{int(p*100)}={val:.1f}" for p,
          val in zip(percentiles, percentile_values)]
     )
-    print_info(f"Streak length percentiles: {percentile_info}")
+    if verbose:
+        print_info(f"Streak length percentiles: {percentile_info}")
 
     return percentile_values
 

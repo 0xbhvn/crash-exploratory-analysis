@@ -6,10 +6,6 @@ todos:
     notes: Initial 'rank:pairwise' attempt failed. Need alternative approach like XGBRanker or external libraries.
 
   # P1 - Classical Pipeline Tuning
-  - id: rolling_cv
-    description: Implement Rolling Cross-Validation (TimeSeriesSplit, k-folds)
-    priority: P1
-    notes: Average metrics across folds, potentially adapt early stopping per fold.
   - id: focal_loss
     description: Implement Focal Loss (Custom XGBoost or LightGBM)
     priority: P1
@@ -71,8 +67,12 @@ done:
   - id: probability_calibration
     description: Add Isotonic Probability Calibration (CalibratedClassifierCV)
     priority: P0
+  - id: rolling_cv
+    description: Implement Rolling Cross-Validation (TimeSeriesSplit, k-folds)
+    priority: P1
+    notes: Average metrics across folds, potentially adapt early stopping per fold.
   - id: optuna_hpo
     description: Add Hyperparameter Optimization (Optuna) with Rolling CV
     priority: P1
     depends_on: rolling_cv
-    notes: Initial implementation uses single train/test split due to dependency. Revisit after rolling_cv is done. 
+    notes: Uses TimeSeriesSplit for more robust HPO evaluation. 
